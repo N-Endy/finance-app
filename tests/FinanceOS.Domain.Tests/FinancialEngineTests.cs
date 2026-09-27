@@ -82,7 +82,20 @@ public class FinancialEngineTests
 
         Assert.Equal(ReconciliationStatus.Incomplete, result.Status);
         Assert.Null(result.ExpectedClosingMinor);
+        Assert.Null(result.DifferenceMinor);
         Assert.Contains("incomplete", result.Sentence, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Opening_and_actual_compute_expected_and_difference()
+    {
+        var result = ReconciliationCalculator.Calculate(
+            Guid.NewGuid(), "Stanbic", 10_000_000, 1_000_000, 500_000, 0, 0, 10_500_000, new DateOnly(2026, 9, 27),
+            Provenance.Confirmed);
+
+        Assert.Equal(ReconciliationStatus.Reconciled, result.Status);
+        Assert.Equal(10_500_000, result.ExpectedClosingMinor);
+        Assert.Equal(0, result.DifferenceMinor);
     }
 
     [Fact]

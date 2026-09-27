@@ -187,6 +187,9 @@ public sealed class FinanceController(FinanceOsService finance) : ControllerBase
         return Ok();
     }
 
+    [HttpPost("exchange-rates/today")]
+    public Task<ExchangeRateDto> EnsureTodaysRate(CancellationToken ct) => finance.EnsureTodaysUsdNgnAsync(ct);
+
     [HttpGet("pension")]
     public Task<PensionDto> Pension(CancellationToken ct) => finance.PensionAsync(ct);
 

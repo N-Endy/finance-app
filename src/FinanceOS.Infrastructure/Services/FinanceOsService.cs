@@ -12,7 +12,7 @@ using Microsoft.EntityFrameworkCore;
 
 namespace FinanceOS.Infrastructure.Services;
 
-public sealed class FinanceOsService(FinanceDbContext db, IPasswordHasher<Owner> passwords, OpenAiLedgerClient llm)
+public sealed class FinanceOsService(FinanceDbContext db, IPasswordHasher<Owner> passwords, OpenAiLedgerClient llm, FxRateClient fxRates)
 {
     private static readonly JsonSerializerOptions JsonOpts = new() { WriteIndented = true };
 
@@ -152,6 +152,7 @@ public sealed class FinanceOsService(FinanceDbContext db, IPasswordHasher<Owner>
         var owner = await RequireOwner(ct);
         var account = await db.Accounts.SingleAsync(a => a.Id == accountId && a.OwnerId == owner.Id, ct);
         var provenance = Enum.Parse<Provenance>(request.Provenance, true);
+        var source = SnapshotSource(request.Source);
         db.BalanceSnapshots.Add(new BalanceSnapshot
         {
             AccountId = account.Id,
@@ -159,10 +160,10 @@ public sealed class FinanceOsService(FinanceDbContext db, IPasswordHasher<Owner>
             Currency = MoneyMapping.ParseCurrency(request.Currency),
             AsOf = request.AsOf,
             Provenance = provenance,
-            Source = "manual",
+            Source = source,
             Notes = request.Notes
         });
-        await AuditAsync(owner.Id, "snapshot", "Account", account.Id, $"Balance {request.Amount} recorded as {provenance}.", ct);
+        await AuditAsync(owner.Id, "snapshot", "Account", account.Id, $"{source} balance {request.Amount} recorded as {provenance}.", ct);
         await db.SaveChangesAsync(ct);
     }
 
@@ -674,10 +675,53 @@ public sealed class FinanceOsService(FinanceDbContext db, IPasswordHasher<Owner>
             To = MoneyMapping.ParseCurrency(to),
             Rate = rate,
             AsOf = asOf,
-            Source = string.IsNullOrWhiteSpace(source) ? "manual" : source
+            Source = string.IsNullOrWhiteSpace(source) ? "manual" : source.Trim()
         });
         await db.SaveChangesAsync(ct);
     }
+
+    public async Task<ExchangeRateDto> EnsureTodaysUsdNgnAsync(CancellationToken ct)
+    {
+        var owner = await RequireOwner(ct);
+        var today = MoneyMapping.Today();
+        var existing = await TodaysUsdNgnAsync(owner.Id, today, ct);
+        if (existing is not null)
+        {
+            return ToRateDto(existing);
+        }
+
+        var fetched = await fxRates.FetchUsdNgnAsync(ct);
+        if (fetched is null)
+        {
+            throw new DomainException("Today's USD/NGN rate is UNKNOWN. The published feed did not return a figure.");
+        }
+
+        db.ExchangeRates.Add(new ExchangeRate
+        {
+            OwnerId = owner.Id,
+            From = Currency.Usd,
+            To = Currency.Ngn,
+            Rate = fetched.Value.Rate,
+            AsOf = today,
+            Source = FxRateClient.SourceName
+        });
+        await db.SaveChangesAsync(ct);
+        return new ExchangeRateDto("USD", "NGN", fetched.Value.Rate, today, FxRateClient.SourceName);
+    }
+
+    private async Task<ExchangeRate?> TodaysUsdNgnAsync(Guid ownerId, DateOnly today, CancellationToken ct)
+    {
+        var rows = await db.ExchangeRates
+            .Where(r => r.OwnerId == ownerId && r.From == Currency.Usd && r.To == Currency.Ngn && r.AsOf == today)
+            .ToListAsync(ct);
+        return rows
+            .OrderByDescending(r => r.Source == "manual")
+            .ThenByDescending(r => r.RecordedAtUtc)
+            .FirstOrDefault();
+    }
+
+    private static ExchangeRateDto ToRateDto(ExchangeRate rate) =>
+        new(rate.From.ToString(), rate.To.ToString(), rate.Rate, rate.AsOf, rate.Source);
 
     public async Task<PensionDto> PensionAsync(CancellationToken ct)
     {
@@ -1379,7 +1423,11 @@ public sealed class FinanceOsService(FinanceDbContext db, IPasswordHasher<Owner>
     }
 
     private async Task<BalanceSnapshot?> LatestSnapshotAsync(Guid accountId, CancellationToken ct) =>
-        await db.BalanceSnapshots.Where(s => s.AccountId == accountId).OrderByDescending(s => s.AsOf).ThenByDescending(s => s.RecordedAtUtc).FirstOrDefaultAsync(ct);
+        await db.BalanceSnapshots
+            .Where(s => s.AccountId == accountId && s.Source != "opening")
+            .OrderByDescending(s => s.AsOf)
+            .ThenByDescending(s => s.RecordedAtUtc)
+            .FirstOrDefaultAsync(ct);
 
     private async Task<ReconciliationResult> ReconcileAsync(FinancialAccount account, CancellationToken ct)
     {
@@ -1479,8 +1527,13 @@ public sealed class FinanceOsService(FinanceDbContext db, IPasswordHasher<Owner>
             items.Add((holding.Name, holding.AmountMinor, holding.Currency, holding.Provenance, holding.IncludeInNetWorth, holding.IsExpectedReceivable, false));
         }
 
-        var fx = await db.ExchangeRates.Where(r => r.OwnerId == owner.Id && r.From == Currency.Usd && r.To == Currency.Ngn)
-            .OrderByDescending(r => r.AsOf).FirstOrDefaultAsync(ct);
+        var fxRows = await db.ExchangeRates.Where(r => r.OwnerId == owner.Id && r.From == Currency.Usd && r.To == Currency.Ngn)
+            .ToListAsync(ct);
+        var fx = fxRows
+            .OrderByDescending(r => r.AsOf)
+            .ThenByDescending(r => r.Source == "manual")
+            .ThenByDescending(r => r.RecordedAtUtc)
+            .FirstOrDefault();
         var explanation = NetWorthCalculator.Calculate(items, fx);
         return new ExplainDto(explanation.Metric, explanation.Sentence, explanation.Formula,
             explanation.Lines.Select(MoneyMapping.Line).ToList(),
@@ -1704,6 +1757,17 @@ public sealed class FinanceOsService(FinanceDbContext db, IPasswordHasher<Owner>
 
         result.Add(current.ToString());
         return result.ToArray();
+    }
+
+    private static string SnapshotSource(string? source)
+    {
+        var value = string.IsNullOrWhiteSpace(source) ? "manual" : source.Trim().ToLowerInvariant();
+        if (value is not ("opening" or "manual"))
+        {
+            throw new DomainException("Enter an opening balance or the current figure. Other sources are not recorded.");
+        }
+
+        return value;
     }
 
     private static bool LooksLikeBettingAdvice(string lower) =>

@@ -1,6 +1,6 @@
 import type {
   Account, ActionItem, AlertItem, AllocationLine, Assistant, AuthStatus, BudgetItem,
-  Business, CalendarItem, Dashboard, Explain, FamilyRow, Goal, Holding, IncomePreview,
+  Business, CalendarItem, Dashboard, Explain, ExchangeRate, FamilyRow, Goal, Holding, IncomePreview,
   MoneyMapNode, Pension, Preview, Reconciliation, Report, Retirement, Rule, Settings,
   Subscription, Transaction, Violation
 } from "@/lib/types";
@@ -66,8 +66,9 @@ export const api = {
   updateBudget: (category: string, body: object) => request(`/api/v1/budget/${encodeURIComponent(category)}`, { method: "PUT", body: JSON.stringify(body) }),
   holdings: () => request<Holding[]>("/api/v1/holdings"),
   updateHolding: (id: string, body: object) => request(`/api/v1/holdings/${id}`, { method: "POST", body: JSON.stringify(body) }),
-  rates: () => request("/api/v1/exchange-rates"),
+  rates: () => request<ExchangeRate[]>("/api/v1/exchange-rates"),
   addRate: (body: object) => request("/api/v1/exchange-rates", { method: "POST", body: JSON.stringify(body) }),
+  ensureTodaysRate: () => request<ExchangeRate>("/api/v1/exchange-rates/today", { method: "POST" }),
   pension: () => request<Pension>("/api/v1/pension"),
   updatePension: (body: object) => request("/api/v1/pension", { method: "PUT", body: JSON.stringify(body) }),
   retirement: () => request<Retirement>("/api/v1/retirement"),

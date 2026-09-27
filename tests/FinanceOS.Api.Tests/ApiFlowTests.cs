@@ -83,6 +83,44 @@ public class ApiFlowTests : IClassFixture<WebApplicationFactory<Program>>
     }
 
     [Fact]
+    public async Task Opening_snapshot_fills_reconciliation_without_inventing_actual()
+    {
+        var client = await SignedInClient();
+        var accounts = await client.GetFromJsonAsync<AccountDto[]>("/api/v1/accounts");
+        var stanbic = Assert.Single(accounts!, a => a.Slug == "stanbic");
+
+        var incomplete = await ReadRecon(client, stanbic.Id);
+        Assert.Null(incomplete.OpeningMinor);
+        Assert.Null(incomplete.ExpectedClosingMinor);
+        Assert.Null(incomplete.DifferenceMinor);
+        Assert.Contains("opening", incomplete.Sentence, StringComparison.OrdinalIgnoreCase);
+
+        var opening = await client.PostAsJsonAsync($"/api/v1/accounts/{stanbic.Id}/snapshots", new SnapshotRequest(
+            100_000m, "NGN", DateOnly.FromDateTime(DateTime.UtcNow.Date), "Confirmed", "test opening", "opening"));
+        Assert.Equal(HttpStatusCode.OK, opening.StatusCode);
+
+        var afterOpening = await ReadRecon(client, stanbic.Id);
+        Assert.Equal(10_000_000, afterOpening.OpeningMinor);
+        Assert.NotNull(afterOpening.ExpectedClosingMinor);
+        Assert.Null(afterOpening.ActualMinor);
+        Assert.Null(afterOpening.DifferenceMinor);
+    }
+
+    private static async Task<ReconDto> ReadRecon(HttpClient client, Guid accountId)
+    {
+        var body = await client.GetFromJsonAsync<ReconDto>($"/api/v1/accounts/{accountId}/reconciliation");
+        Assert.NotNull(body);
+        return body!;
+    }
+
+    private sealed record ReconDto(
+        long? OpeningMinor,
+        long? ExpectedClosingMinor,
+        long? ActualMinor,
+        long? DifferenceMinor,
+        string Sentence);
+
+    [Fact]
     public async Task Failed_login_is_a_generic_bad_request()
     {
         var client = _factory.CreateClient();

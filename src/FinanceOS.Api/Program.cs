@@ -49,6 +49,11 @@ builder.Services.AddHttpClient<OpenAiLedgerClient>(client =>
     client.BaseAddress = new Uri("https://api.openai.com/");
     client.Timeout = TimeSpan.FromSeconds(20);
 });
+builder.Services.AddHttpClient<FxRateClient>(client =>
+{
+    client.BaseAddress = new Uri("https://open.er-api.com/");
+    client.Timeout = TimeSpan.FromSeconds(10);
+});
 builder.Services.AddScoped<FinanceOsService>();
 builder.Services.AddScoped<DomainExceptionFilter>();
 builder.Services.AddSingleton<IPasswordHasher<Owner>, PasswordHasher<Owner>>();

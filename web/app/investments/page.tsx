@@ -4,12 +4,13 @@ import { FormEvent, useEffect, useState } from "react";
 import { Shell, Card, MoneyView } from "@/components/ui";
 import { api } from "@/lib/api";
 import { failMessage } from "@/lib/feedback";
-import type { Holding, Pension, Retirement } from "@/lib/types";
+import type { ExchangeRate, Holding, Pension, Retirement } from "@/lib/types";
 
 export default function InvestmentsPage() {
   const [holdings, setHoldings] = useState<Holding[]>([]);
   const [pension, setPension] = useState<Pension | null>(null);
   const [retirement, setRetirement] = useState<Retirement | null>(null);
+  const [todayRate, setTodayRate] = useState<ExchangeRate | null>(null);
   const [rate, setRate] = useState("");
   const [rsa, setRsa] = useState("");
   const [balances, setBalances] = useState<Record<string, string>>({});
@@ -23,6 +24,13 @@ export default function InvestmentsPage() {
     setPension(await api.pension());
     setRetirement(await api.retirement());
     setBalances(Object.fromEntries(rows.map((holding) => [holding.id, holding.amount.major == null ? "" : String(holding.amount.major)])));
+    try {
+      setTodayRate(await api.ensureTodaysRate());
+      setError(null);
+    } catch (err) {
+      setTodayRate(null);
+      setError(failMessage(err));
+    }
   }
   useEffect(() => { void load().catch((err) => setError(failMessage(err))); }, []);
 
@@ -34,6 +42,7 @@ export default function InvestmentsPage() {
     try {
       await api.addRate({ from: "USD", to: "NGN", rate: Number(rate), asOf: new Date().toISOString().slice(0, 10), source: "manual" });
       setRate("");
+      setTodayRate(await api.ensureTodaysRate());
       await load();
       setMessage("Rate saved.");
     } catch (err) {
@@ -82,7 +91,7 @@ export default function InvestmentsPage() {
   return (
     <Shell>
       <h1>Investments, pension, and retirement</h1>
-      <p className="lede">USD stays in dollars until you enter an FX rate. Enter a current balance to confirm a holding.</p>
+      <p className="lede">USD converts with today&apos;s published USD/NGN rate. If the feed is down, conversion stays UNKNOWN. Risevest and Bamboo naira charges are still entered by you — those are bank charges, not this rate.</p>
       {message && <p className="sentence">{message}</p>}
       {error && <p className="error">{error}</p>}
       {holdings.map((holding) => (
@@ -103,8 +112,11 @@ export default function InvestmentsPage() {
         </Card>
       ))}
       <Card title="FX rate">
+        {todayRate
+          ? <p className="sentence">Today&apos;s USD/NGN: {todayRate.rate.toLocaleString("en-NG", { maximumFractionDigits: 4 })} as of {todayRate.asOf} ({todayRate.source}).</p>
+          : <p className="sentence">UNKNOWN. Today&apos;s published USD/NGN rate has not been recorded.</p>}
         <form className="row" onSubmit={saveRate}>
-          <input value={rate} onChange={(e) => setRate(e.target.value)} placeholder="USD to NGN rate you observed" />
+          <input value={rate} onChange={(e) => setRate(e.target.value)} placeholder="Override with a rate you observed" />
           <button className="btn" type="submit" disabled={busy === "rate"}>Save rate</button>
         </form>
       </Card>

@@ -59,6 +59,7 @@ export type Preview = { proposed?: Record<string, unknown> | null; summary: stri
 export type Goal = { id: string; slug: string; name: string; kind: string; target: Money; current: Money; progressSentence: string; monthly: Money; isAspiration: boolean };
 export type BudgetItem = { category: string; budget: Money; actual: Money; remaining: Money; percentUsed: string; status: string; sentence: string };
 export type Holding = { id: string; name: string; amount: Money; liquidity: string; purpose: string; statusNote: string; isExpectedReceivable: boolean };
+export type ExchangeRate = { from: string; to: string; rate: number; asOf: string; source: string };
 export type MoneyMapNode = { id: string; label: string; kind: string; amount?: Money | null; purpose: string; whenToUse: string; ifSpent: string; children: string[] };
 export type ActionItem = { id: string; forDate: string; title: string; detail: string; state: string };
 export type AlertItem = { priority: string; message: string };

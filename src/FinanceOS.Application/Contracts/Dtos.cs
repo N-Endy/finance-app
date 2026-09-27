@@ -51,7 +51,7 @@ public sealed record AccountDto(
     MoneyDto? LatestBalance,
     string ReconciliationStatus);
 
-public sealed record SnapshotRequest(decimal Amount, string Currency, DateOnly AsOf, string Provenance, string? Notes);
+public sealed record SnapshotRequest(decimal Amount, string Currency, DateOnly AsOf, string Provenance, string? Notes, string? Source = null);
 public sealed record AssignmentRequest(Guid EnvelopeId, decimal Amount, DateOnly AsOf, string? Notes);
 
 public sealed record TransactionDto(
