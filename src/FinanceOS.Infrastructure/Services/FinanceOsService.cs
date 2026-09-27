@@ -366,10 +366,21 @@ public sealed class FinanceOsService(FinanceDbContext db, IPasswordHasher<Owner>
     public async Task VoidTransactionAsync(Guid id, CancellationToken ct)
     {
         var owner = await RequireOwner(ct);
-        var tx = await db.Transactions.Include(t => t.Revisions).SingleAsync(t => t.Id == id && t.OwnerId == owner.Id, ct);
+        var tx = await db.Transactions.SingleAsync(t => t.Id == id && t.OwnerId == owner.Id, ct);
+        if (tx.IsVoided)
+        {
+            return;
+        }
+
         var before = JsonSerializer.Serialize(new { tx.IsVoided, tx.AmountMinor, tx.Description });
         tx.IsVoided = true;
-        tx.Revisions.Add(new TransactionRevision { Action = "void", BeforeJson = before, AfterJson = """{"isVoided":true}""" });
+        db.Set<TransactionRevision>().Add(new TransactionRevision
+        {
+            TransactionId = tx.Id,
+            Action = "void",
+            BeforeJson = before,
+            AfterJson = """{"isVoided":true}"""
+        });
         await AuditAsync(owner.Id, "void", "Transaction", tx.Id, tx.Description, ct);
         await db.SaveChangesAsync(ct);
     }
@@ -467,7 +478,7 @@ public sealed class FinanceOsService(FinanceDbContext db, IPasswordHasher<Owner>
             var current = await GoalCurrentAsync(owner, goal, ct);
             var remaining = current.Minor is null ? (long?)null : goal.TargetMinor - current.Minor.Value;
             var sentence = goal.IsAspiration
-                ? "₦500m+ is an aspiration label, not a retirement forecast."
+                ? "₦500m+ is an aspiration."
                 : current.Minor is null
                     ? $"Current progress is UNKNOWN. {current.Needed}"
                     : remaining <= 0
@@ -483,6 +494,15 @@ public sealed class FinanceOsService(FinanceDbContext db, IPasswordHasher<Owner>
         }
 
         return list;
+    }
+
+    public async Task UpdateGoalAsync(Guid id, decimal target, decimal monthly, CancellationToken ct)
+    {
+        var owner = await RequireOwner(ct);
+        var goal = await db.Goals.SingleAsync(g => g.Id == id && g.OwnerId == owner.Id, ct);
+        goal.TargetMinor = Money.NgnFromMajor(target).MinorUnits;
+        goal.MonthlyContributionMinor = Money.NgnFromMajor(monthly).MinorUnits;
+        await db.SaveChangesAsync(ct);
     }
 
     public async Task ConvertHousingToNextRentAsync(CancellationToken ct)
@@ -590,6 +610,17 @@ public sealed class FinanceOsService(FinanceDbContext db, IPasswordHasher<Owner>
         return items;
     }
 
+    public async Task UpdateBudgetLineAsync(string category, decimal amount, CancellationToken ct)
+    {
+        var owner = await RequireOwner(ct);
+        var plan = await db.AllocationPlans.Include(p => p.Lines).Include(p => p.IncomeSource)
+            .SingleAsync(p => p.OwnerId == owner.Id && p.IncomeSource!.Slug == "salary", ct);
+        var line = plan.Lines.SingleOrDefault(l => string.Equals(l.Name, category, StringComparison.OrdinalIgnoreCase))
+                   ?? throw new DomainException($"No salary allocation named {category}.");
+        line.AmountMinor = Money.NgnFromMajor(amount).MinorUnits;
+        await db.SaveChangesAsync(ct);
+    }
+
     public async Task<IReadOnlyList<HoldingDto>> HoldingsAsync(CancellationToken ct)
     {
         var owner = await RequireOwner(ct);
@@ -606,6 +637,20 @@ public sealed class FinanceOsService(FinanceDbContext db, IPasswordHasher<Owner>
         holding.AmountMinor = Money.FromMajor(amount, holding.Currency).MinorUnits;
         holding.Provenance = Enum.Parse<Provenance>(provenance, true);
         holding.AsOf = asOf;
+        if (holding.AccountId is Guid accountId)
+        {
+            db.BalanceSnapshots.Add(new BalanceSnapshot
+            {
+                AccountId = accountId,
+                AmountMinor = holding.AmountMinor,
+                Currency = holding.Currency,
+                AsOf = asOf,
+                Provenance = holding.Provenance,
+                Source = "holding-update",
+                Notes = "Entered as the current holding balance."
+            });
+        }
+
         await db.SaveChangesAsync(ct);
     }
 
@@ -640,15 +685,15 @@ public sealed class FinanceOsService(FinanceDbContext db, IPasswordHasher<Owner>
         var pension = await db.Pensions.SingleAsync(p => p.OwnerId == owner.Id, ct);
         if (pension.CurrentBalanceMinor is null)
         {
-            return new PensionDto(MoneyDto.Unknown("Obtain an RSA statement. Employer pension is known to exist; the balance was not captured."),
-                null, null, "Pension data is UNKNOWN. Nothing has been fabricated.");
+            return new PensionDto(MoneyDto.Unknown("RSA balance is unknown until a statement is entered."),
+                null, null, "RSA balance is unknown.");
         }
 
         return new PensionDto(
             MoneyDto.Of(pension.CurrentBalanceMinor.Value, pension.Currency, pension.Provenance),
             pension.EmployeeContributionMinor is null ? null : MoneyDto.Of(pension.EmployeeContributionMinor.Value, pension.Currency, Provenance.Confirmed),
             pension.EmployerContributionMinor is null ? null : MoneyDto.Of(pension.EmployerContributionMinor.Value, pension.Currency, Provenance.Confirmed),
-            "RSA figures are exactly as you entered them.");
+            pension.Provenance == Provenance.Confirmed ? "RSA figures are as you entered them." : "Last-known RSA balance.");
     }
 
     public async Task UpdatePensionAsync(decimal? balance, decimal? employee, decimal? employer, int? retirementAge, CancellationToken ct)
@@ -880,12 +925,6 @@ public sealed class FinanceOsService(FinanceDbContext db, IPasswordHasher<Owner>
         var row = recipients.Single(r => r.Id == id);
         row.RecurringAmountMinor = Money.NgnFromMajor(amount).MinorUnits;
         row.Purpose = purpose;
-        var total = recipients.Sum(r => r.RecurringAmountMinor ?? 0);
-        if (total != 8_500_000)
-        {
-            throw new DomainException($"Family sub-lines must sum to ₦85,000. They currently sum to {Money.FromMajor(total / 100m, Currency.Ngn)}.");
-        }
-
         await db.SaveChangesAsync(ct);
     }
 
@@ -1119,13 +1158,7 @@ public sealed class FinanceOsService(FinanceDbContext db, IPasswordHasher<Owner>
     public async Task DeleteAllDataAsync(CancellationToken ct)
     {
         var owner = await RequireOwner(ct);
-        db.RemoveRange(db.Transactions.Where(t => t.OwnerId == owner.Id));
-        db.RemoveRange(db.Holdings.Where(h => h.OwnerId == owner.Id));
-        db.RemoveRange(db.Actions.Where(a => a.OwnerId == owner.Id));
-        db.RemoveRange(db.Violations.Where(v => v.OwnerId == owner.Id));
-        db.RemoveRange(db.FamilySupports.Where(f => f.OwnerId == owner.Id));
-        db.RemoveRange(db.BalanceSnapshots);
-        await db.SaveChangesAsync(ct);
+        await PlanSeeder.ClearOwnerPlanAsync(db, owner, ct);
         owner.PlanSeeded = false;
         await PlanSeeder.SeedAsync(db, owner, ct);
         await AuditAsync(owner.Id, "reset", "Owner", owner.Id, "User requested delete and reseed.", ct);

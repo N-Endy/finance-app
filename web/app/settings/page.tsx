@@ -34,8 +34,8 @@ export default function SettingsPage() {
 
   return (
     <Shell>
-      <h1>Settings and accountability</h1>
-      <p className="lede">Configure the plan. Export your data. Delete and reseed if you want a clean snapshot. Bank passwords are never stored.</p>
+      <h1>Settings</h1>
+      <p className="lede">Allowance, alerts, export, and a reset back to the plan snapshot.</p>
 
       {settings && (
         <Card title="OPay allowance and alert bands">

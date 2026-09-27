@@ -100,6 +100,7 @@ using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<FinanceDbContext>();
     await db.Database.EnsureCreatedAsync();
+    await PlanSeeder.EnsureLatestSnapshotAsync(db);
 }
 
 app.MapOpenApi();

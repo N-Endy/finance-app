@@ -39,7 +39,7 @@ export default function LoginPage() {
     <div className="auth">
       <form className="card auth-card stack" onSubmit={submit}>
         <h1>Finance OS</h1>
-        <p className="lede">A calm ledger for one owner. Bank balances are not treated as spendable cash.</p>
+        <p className="lede">See where your money is, what it is for, and what you can spend.</p>
         {status?.needsSetup && (
           <div>
             <label>Name</label>
@@ -55,8 +55,8 @@ export default function LoginPage() {
           <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} minLength={10} required />
         </div>
         {error && <p className="error">{error}</p>}
-        <button className="btn" type="submit">{status?.needsSetup ? "Create owner and seed the plan" : "Sign in"}</button>
-        {status?.needsSetup && <p className="lede">First run seeds the September 2026 plan snapshot. Last-known figures stay labelled. Missing balances stay UNKNOWN.</p>}
+        <button className="btn" type="submit">{status?.needsSetup ? "Create account" : "Sign in"}</button>
+        {status?.needsSetup && <p className="lede">Your plan loads on first setup. Unknown balances stay blank until you enter them.</p>}
       </form>
     </div>
   );

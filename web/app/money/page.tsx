@@ -14,7 +14,7 @@ export default function MoneyPage() {
   return (
     <Shell>
       <h1>Where is my money?</h1>
-      <p className="lede">Salary flows through Stanbic. Secondary income stays on Kuda until the waterfall is applied. Click a bucket for the job, the rule, and what breaks if you spend it.</p>
+      <p className="lede">Salary lands in Stanbic. Secondary income stays on Kuda until the waterfall is applied.</p>
       <div className="grid three">
         {nodes.map((node) => (
           <button key={node.id} className="card map-node" onClick={() => setSelected(node)}>

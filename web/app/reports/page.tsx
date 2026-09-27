@@ -21,7 +21,7 @@ export default function ReportsPage() {
   return (
     <Shell>
       <h1>What happened over time?</h1>
-      <p className="lede">Every report is built from recorded transactions and labelled balances. Betting is awareness only.</p>
+      <p className="lede">Reports from recorded transactions and labelled balances.</p>
       <form className="row" onSubmit={load}>
         <select value={name} onChange={(e) => setName(e.target.value)}>{names.map((n) => <option key={n}>{n}</option>)}</select>
         <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} />

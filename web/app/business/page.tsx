@@ -13,7 +13,7 @@ export default function BusinessPage() {
   return (
     <Shell>
       <h1>Is MatchPredictor making or losing money?</h1>
-      <p className="lede">This ledger is separate from personal spending and from betting. Personal betting never appears here.</p>
+      <p className="lede">MatchPredictor costs and revenue, separate from personal spending.</p>
       <div className="grid three">
         <Card title="Revenue"><MoneyView money={data.revenue} large /></Card>
         <Card title="Expenses"><MoneyView money={data.expenses} large /></Card>

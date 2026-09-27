@@ -64,7 +64,7 @@ export default function TransactionsPage() {
   return (
     <Shell>
       <h1>Where did my money go?</h1>
-      <p className="lede">Quick entry is the everyday path. Detailed entry is for precision. The assistant proposes structured actions and waits for confirmation.</p>
+      <p className="lede">Record a transaction, then confirm before it is saved.</p>
       {error && <p className="error">{error}</p>}
 
       <Card title="Quick entry">

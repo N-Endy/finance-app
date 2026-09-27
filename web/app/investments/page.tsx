@@ -11,11 +11,15 @@ export default function InvestmentsPage() {
   const [retirement, setRetirement] = useState<Retirement | null>(null);
   const [rate, setRate] = useState("");
   const [rsa, setRsa] = useState("");
+  const [balances, setBalances] = useState<Record<string, string>>({});
+  const [message, setMessage] = useState<string | null>(null);
 
   async function load() {
-    setHoldings(await api.holdings());
+    const rows = await api.holdings();
+    setHoldings(rows);
     setPension(await api.pension());
     setRetirement(await api.retirement());
+    setBalances(Object.fromEntries(rows.map((holding) => [holding.id, holding.amount.major == null ? "" : String(holding.amount.major)])));
   }
   useEffect(() => { void load(); }, []);
 
@@ -32,15 +36,37 @@ export default function InvestmentsPage() {
     await load();
   }
 
+  async function saveHolding(event: FormEvent, holding: Holding) {
+    event.preventDefault();
+    await api.updateHolding(holding.id, {
+      amount: Number(balances[holding.id]),
+      provenance: "Confirmed",
+      asOf: new Date().toISOString().slice(0, 10)
+    });
+    await load();
+    setMessage(`${holding.name} saved.`);
+  }
+
   return (
     <Shell>
-      <h1>Investments, pension, and retirement assumptions</h1>
-      <p className="lede">USD stays in dollars until you type an FX rate. Pension stays empty until you enter an RSA statement. Retirement scenarios are assumptions, not predictions.</p>
+      <h1>Investments, pension, and retirement</h1>
+      <p className="lede">USD stays in dollars until you enter an FX rate. Enter a current balance to confirm a holding.</p>
+      {message && <p className="sentence">{message}</p>}
       {holdings.map((holding) => (
         <Card key={holding.id} title={holding.name}>
           <MoneyView money={holding.amount} />
           <p className="sentence">{holding.purpose}. {holding.statusNote}</p>
           {holding.isExpectedReceivable && <span className="badge expected">expected receivable</span>}
+          <form className="row" style={{ marginTop: 12 }} onSubmit={(event) => saveHolding(event, holding)}>
+            <input
+              value={balances[holding.id] ?? ""}
+              onChange={(e) => setBalances((current) => ({ ...current, [holding.id]: e.target.value }))}
+              placeholder="Enter current balance"
+              inputMode="decimal"
+              aria-label={`${holding.name} current balance`}
+            />
+            <button className="btn" type="submit">Save</button>
+          </form>
         </Card>
       ))}
       <Card title="FX rate">

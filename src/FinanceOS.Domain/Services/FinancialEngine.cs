@@ -94,8 +94,8 @@ public static class SpendableCalculator
         }
 
         var sentence = spendable == 0
-            ? "True spendable money is ₦0. Every naira in these assignments already has a job, or sits in an account that is not a daily-spending wallet."
-            : $"You can safely spend {Money.FromMajor(spendable / 100m, currency)} from daily-spending envelopes that still have unused money.";
+            ? "Spendable is ₦0."
+            : $"You can spend {Money.FromMajor(spendable / 100m, currency)} from unused daily-spending envelopes.";
 
         return new SpendableResult(spendable, currency, lines, sentence);
     }
@@ -311,7 +311,7 @@ public static class HousingProjection
                 expectedRotatingPayoutMinor,
                 null,
                 false,
-                "Projected move date is UNKNOWN because the PiggyVest housing balance has not been entered. An estimate that assumes PiggyVest is ₦0 can be shown only if you ask for it, and it must be labelled ESTIMATE.",
+                "Projected move date is UNKNOWN until the PiggyVest housing balance is entered.",
                 lines);
         }
 
@@ -324,7 +324,7 @@ public static class HousingProjection
 
         if (remaining <= 0)
         {
-            sentence = "Dedicated housing capital plus the expected rotating payout already covers the ₦3,000,000 working target, subject to verifying last-known home savings and the rotating payout.";
+            sentence = "Housing capital plus the expected rotating payout covers the ₦3,000,000 target.";
         }
         else if (monthly <= 0)
         {
@@ -478,7 +478,7 @@ public static class EmergencyTarget
         if (postMoveEssentialMonthlyMinor is null)
         {
             return (provisionalTargetMinor,
-                $"The emergency target is the provisional plan figure {Money.FromMajor(provisionalTargetMinor / 100m, Currency.Ngn)} until actual essential monthly expenses after moving are entered. Six months of essentials is not being invented.",
+                $"The emergency target is the provisional {Money.FromMajor(provisionalTargetMinor / 100m, Currency.Ngn)} until post-move essentials are entered.",
                 true);
         }
 

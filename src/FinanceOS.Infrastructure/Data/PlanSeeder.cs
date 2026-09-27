@@ -6,8 +6,66 @@ namespace FinanceOS.Infrastructure.Data;
 
 public static class PlanSeeder
 {
-    public const string SnapshotName = "Nnamdi_Comprehensive_Financial_Plan_v2";
-    public static readonly DateOnly CaptureDate = new(2026, 9, 1);
+    public const string SnapshotName = "Nnamdi_Comprehensive_Financial_Plan_v2_Updated";
+    public const string SnapshotTopic = "plan-snapshot";
+    public static readonly DateOnly CaptureDate = new(2026, 9, 26);
+
+    public static async Task EnsureLatestSnapshotAsync(FinanceDbContext db, CancellationToken ct = default)
+    {
+        var owners = await db.Owners.ToListAsync(ct);
+        foreach (var owner in owners)
+        {
+            var note = await db.ExternalNotes.FirstOrDefaultAsync(n => n.OwnerId == owner.Id && n.Topic == SnapshotTopic, ct);
+            if (note?.Body == SnapshotName) continue;
+            if (owner.PlanSeeded || note is not null)
+            {
+                await ClearOwnerPlanAsync(db, owner, ct);
+                owner.PlanSeeded = false;
+            }
+
+            await SeedAsync(db, owner, ct);
+        }
+    }
+
+    public static async Task ClearOwnerPlanAsync(FinanceDbContext db, Owner owner, CancellationToken ct = default)
+    {
+        var txs = await db.Transactions.Include(t => t.Postings).Include(t => t.Revisions)
+            .Where(t => t.OwnerId == owner.Id).ToListAsync(ct);
+        db.RemoveRange(txs);
+
+        var accounts = await db.Accounts.Include(a => a.Snapshots).Include(a => a.Assignments)
+            .Where(a => a.OwnerId == owner.Id).ToListAsync(ct);
+        foreach (var account in accounts)
+        {
+            account.Snapshots.Clear();
+            account.Assignments.Clear();
+        }
+
+        var plans = await db.AllocationPlans.Include(p => p.Lines)
+            .Where(p => p.OwnerId == owner.Id).ToListAsync(ct);
+        db.RemoveRange(plans);
+
+        db.RemoveRange(await db.FamilySupports.Where(f => f.OwnerId == owner.Id).ToListAsync(ct));
+        db.RemoveRange(await db.FamilyRecipients.Where(f => f.OwnerId == owner.Id).ToListAsync(ct));
+        db.RemoveRange(await db.Holdings.Where(h => h.OwnerId == owner.Id).ToListAsync(ct));
+        db.RemoveRange(await db.Goals.Where(g => g.OwnerId == owner.Id).ToListAsync(ct));
+        db.RemoveRange(await db.Categories.Where(c => c.OwnerId == owner.Id).ToListAsync(ct));
+        db.RemoveRange(await db.Envelopes.Where(e => e.OwnerId == owner.Id).ToListAsync(ct));
+        db.RemoveRange(await db.IncomeSources.Where(i => i.OwnerId == owner.Id).ToListAsync(ct));
+        db.RemoveRange(await db.RecurringItems.Where(r => r.OwnerId == owner.Id).ToListAsync(ct));
+        db.RemoveRange(await db.Subscriptions.Where(s => s.OwnerId == owner.Id).ToListAsync(ct));
+        db.RemoveRange(await db.Rules.Where(r => r.OwnerId == owner.Id).ToListAsync(ct));
+        db.RemoveRange(await db.Violations.Where(v => v.OwnerId == owner.Id).ToListAsync(ct));
+        db.RemoveRange(await db.Actions.Where(a => a.OwnerId == owner.Id).ToListAsync(ct));
+        db.RemoveRange(await db.ExternalNotes.Where(n => n.OwnerId == owner.Id).ToListAsync(ct));
+        db.RemoveRange(await db.ActualCharges.Where(c => c.OwnerId == owner.Id).ToListAsync(ct));
+        db.RemoveRange(await db.Businesses.Where(b => b.OwnerId == owner.Id).ToListAsync(ct));
+        db.RemoveRange(await db.ExchangeRates.Where(r => r.OwnerId == owner.Id).ToListAsync(ct));
+        db.RemoveRange(await db.Pensions.Where(p => p.OwnerId == owner.Id).ToListAsync(ct));
+        db.RemoveRange(await db.RetirementAssumptions.Where(r => r.OwnerId == owner.Id).ToListAsync(ct));
+        db.RemoveRange(accounts);
+        await db.SaveChangesAsync(ct);
+    }
 
     public static async Task SeedAsync(FinanceDbContext db, Owner owner, CancellationToken ct = default)
     {
@@ -47,7 +105,12 @@ public static class PlanSeeder
         db.ExternalNotes.AddRange(notes);
         db.RecurringItems.AddRange(recurring);
         db.Subscriptions.AddRange(subscriptions);
-        db.Pensions.Add(new PensionAccount { OwnerId = owner.Id, Provenance = Provenance.Unknown });
+        db.Pensions.Add(new PensionAccount
+        {
+            OwnerId = owner.Id,
+            CurrentBalanceMinor = 83_403_700,
+            Provenance = Provenance.LastKnown
+        });
         db.RetirementAssumptions.Add(new RetirementAssumption { OwnerId = owner.Id });
 
         SeedSnapshots(db, accounts);
@@ -55,7 +118,7 @@ public static class PlanSeeder
         SeedExampleAssignments(db, accounts, envelopes);
 
         owner.PlanSeeded = true;
-        owner.HomeSavingsLockNote = "Workbook recorded a lock until Oct 8 without a year. Confirm the date before any lock warning depends on it.";
+        owner.HomeSavingsLockNote = "Home Savings was locked until Oct 8 at capture.";
         await db.SaveChangesAsync(ct);
     }
 
@@ -84,106 +147,106 @@ public static class PlanSeeder
         return new Dictionary<string, FinancialAccount>
         {
             ["stanbic"] = A("stanbic", "Stanbic", "Stanbic IBTC", AccountRole.Clearing,
-                "Salary command centre and immediate bills.",
+                "Salary and bills.",
                 "Long-term savings, housing, emergency, investments.",
                 "Salary arrival and bills.",
-                "Clearing account, not a wealth vault. Do not treat the whole balance as spendable.",
+                "Clearing account. The balance is not spendable cash.",
                 5_000_000, null, false),
             ["kuda"] = A("kuda", "Kuda", "Kuda", AccountRole.StrategicBuffer,
-                "Secondary-income holding and strategic buffer.",
-                "Lifestyle inflation, betting, long-term wealth parked without a job.",
+                "Secondary income holding.",
+                "Daily spending, betting.",
                 "When secondary income arrives.",
-                "Do not transfer the ₦400k wholesale to Stanbic.",
+                "Keep the ₦400k waterfall here.",
                 0, 10_000_000, false),
             ["opay"] = A("opay", "OPay", "OPay", AccountRole.DailySpending,
-                "Daily spending wallet.",
-                "Emergency, investments, housing, children savings, betting bank.",
+                "Daily spending.",
+                "Emergency, investments, housing, children savings.",
                 "Food, transport, airtime, small purchases.",
-                "If it runs low, review the budget before topping up. Starting allowance band ₦60,000–₦80,000.",
+                "Allowance band ₦60,000–₦80,000.",
                 500_000, 8_000_000, true),
             ["cowrywise-emergency"] = A("cowrywise-emergency", "Cowrywise Emergency", "Cowrywise", AccountRole.SavingsVault,
-                "True emergency reserve.",
-                "Betting, dates, shopping, routine family, moving, investments, lifestyle.",
-                "Genuine emergencies only.",
-                "Protect. Do not use to finance the move.",
+                "Emergency reserve.",
+                "Moving, routine spending, investments.",
+                "Genuine emergencies.",
+                "Not for the move.",
                 null, null, false),
             ["cowrywise-mmf"] = A("cowrywise-mmf", "Cowrywise MMF", "Cowrywise", AccountRole.SavingsVault,
                 "Medium-term liquid wealth.",
-                "Daily spending, betting, casual requests.",
+                "Daily spending.",
                 "Savings and investments.",
-                "Review exact fund terms. Do not invent a yield.",
+                "Yield is unknown until the statement is confirmed.",
                 null, null, false),
             ["cowrywise-children"] = A("cowrywise-children", "Cowrywise Children", "Cowrywise", AccountRole.SavingsVault,
-                "Long-term children fund.",
-                "Any current spending.",
+                "Children fund.",
+                "Current spending.",
                 "Leave untouched.",
-                "Workbook noted a reported ~11.95% p.a. Store as a note only until you confirm the statement.",
+                "Locked long-term.",
                 null, null, false),
             ["cowrywise-home"] = A("cowrywise-home", "Cowrywise Home", "Cowrywise", AccountRole.SavingsVault,
-                "Existing home savings.",
+                "Home savings.",
                 "Daily spending.",
-                "Housing / move, then re-purpose after moving.",
-                "Last known lock note: until Oct 8, year not captured.",
+                "Housing / move.",
+                "Locked until Oct 8 at capture.",
                 null, null, false),
             ["cowrywise-stocks"] = A("cowrywise-stocks", "Cowrywise Stocks", "Cowrywise", AccountRole.InvestmentBroker,
-                "Long-term Nigerian stocks.",
-                "Spending money.",
+                "Nigerian stocks.",
+                "Spending.",
                 "Investments.",
-                "Okomu + Presco. Verify current value.",
+                "Okomu + Presco.",
                 null, null, false),
             ["piggyvest-housing"] = A("piggyvest-housing", "PiggyVest Housing", "PiggyVest", AccountRole.GoalVault,
-                "Move / housing capital.",
-                "Daily spending, emergency, unassigned investments.",
-                "Housing and named sinking funds.",
-                "Every bucket needs a named purpose. Current balance was not captured.",
+                "Housing capital.",
+                "Daily spending, emergency.",
+                "Housing and sinking funds.",
+                "Balance is unknown until entered.",
                 0, 300_000_000, false),
             ["piggyvest-irregular"] = A("piggyvest-irregular", "PiggyVest Annual / Irregular", "PiggyVest", AccountRole.GoalVault,
-                "Clothes, gifts, Christmas, travel, annual expenses, tech.",
+                "Annual and irregular expenses.",
                 "Daily spending.",
-                "Planned irregular expenses only.",
-                "Accumulate month to month.",
+                "Planned irregular expenses.",
+                "Clothes, gifts, Christmas, travel, tech.",
                 0, null, false),
             ["access"] = A("access", "Access Bank", "Access Bank", AccountRole.BusinessCard,
-                "Business and international subscription card.",
-                "Groceries, family, everyday spending, housing.",
-                "Cursor, Railway, domain, AI/SaaS, MatchPredictor.",
-                "Visa card = business/subscriptions only.",
+                "Business and subscriptions.",
+                "Groceries, family, everyday spending.",
+                "Cursor, Railway, domain, AI, MatchPredictor.",
+                "Balance is unknown until entered.",
                 null, null, false),
             ["cash"] = A("cash", "Physical Cash", "Cash", AccountRole.CashOnHand,
                 "Small daily cash.",
                 "Savings.",
-                "Transport and tiny purchases.",
-                "Last known ₦1,800 on 1 Sep 2026.",
+                "Transport and small purchases.",
+                "Last-known ₦3,800.",
                 0, null, true),
             ["bamboo-ng"] = A("bamboo-ng", "Bamboo Nigerian Stocks", "Bamboo", AccountRole.InvestmentBroker,
-                "Long-term Nigerian stocks.",
-                "Spending money.",
+                "Nigerian stocks.",
+                "Spending.",
                 "Investments.",
-                "Approximate. Verify.",
+                "Last-known figure.",
                 null, null, false),
             ["bamboo-us"] = A("bamboo-us", "Bamboo US Stocks", "Bamboo", AccountRole.InvestmentBroker,
-                "Long-term US stocks.",
-                "Spending money.",
+                "US stocks.",
+                "Spending.",
                 "Investments.",
-                "Automated $30/month. Keep in USD until an FX rate is entered.",
+                "$30/month. Held in USD until an FX rate is entered.",
                 null, null, false),
             ["risevest"] = A("risevest", "Risevest Real Estate", "Risevest", AccountRole.InvestmentBroker,
-                "Real estate diversification.",
-                "Spending money.",
+                "Real estate holding.",
+                "Spending.",
                 "Investments.",
-                "Automated $25/month. Keep in USD until an FX rate is entered.",
+                "$25/month. Held in USD until an FX rate is entered.",
                 null, null, false),
             ["rotating-savings"] = A("rotating-savings", "Rotating Family Savings", "Family scheme", AccountRole.ExternalWallet,
                 "Expected housing payout.",
                 "Lifestyle.",
                 "When the payout is received.",
-                "EXPECTED receivable of about ₦1.2m. Excluded from net worth until received. Monthly ₦100k is the same pool, not extra capital.",
+                "Expected ₦1.2m. The ₦100k/month is the same pool.",
                 null, null, false, false),
             ["sportybet"] = A("sportybet", "SportyBet wallet", "SportyBet", AccountRole.ExternalWallet,
-                "External betting wallet tracked for awareness only.",
-                "Any plan money.",
-                "Never. Allocation is ₦0.",
-                "Partial August data only. Do not infer profit or loss without stakes and winnings.",
+                "Betting wallet, awareness only.",
+                "Plan money.",
+                "Allocation is ₦0.",
+                "Partial August data. Profit or loss is unknown.",
                 null, null, false, false)
         };
     }
@@ -381,15 +444,15 @@ public static class PlanSeeder
 
     private static List<Holding> SeedHoldings(Guid ownerId, Dictionary<string, FinancialAccount> accounts) =>
     [
-        H(ownerId, "emergency", "Cowrywise Emergency Fund", accounts["cowrywise-emergency"].Id, 153_748_800, Currency.Ngn, "Liquid/low-risk", "6-month emergency reserve", "Protect; verify current balance", false),
-        H(ownerId, "mmf", "Cowrywise MMF", accounts["cowrywise-mmf"].Id, 232_521_200, Currency.Ngn, "Liquid/low-risk", "Medium-term liquidity / wealth", "Review exact fund terms", false),
-        H(ownerId, "children", "Children Savings", accounts["cowrywise-children"].Id, 10_692_200, Currency.Ngn, "Locked 18 years", "Long-term children goal", "Reported ~11.95% p.a. is a note, not a projection input.", false),
-        H(ownerId, "cw-stocks", "Cowrywise Stocks", accounts["cowrywise-stocks"].Id, 32_691_000, Currency.Ngn, "Market", "Long-term investment", "Okomu + Presco; approximate", false),
-        H(ownerId, "bamboo-ng", "Bamboo Nigerian Stocks", accounts["bamboo-ng"].Id, 59_500_000, Currency.Ngn, "Market", "Long-term investment", "Approximate; verify", false),
-        H(ownerId, "bamboo-us", "Bamboo US Stocks", accounts["bamboo-us"].Id, 60_000, Currency.Usd, "Market", "Long-term investment", "Keep in USD until you enter an FX rate.", false),
-        H(ownerId, "risevest", "Risevest Real Estate", accounts["risevest"].Id, 15_700, Currency.Usd, "Illiquid/longer-term", "Real estate diversification", "Keep in USD until you enter an FX rate.", false),
-        H(ownerId, "home", "Cowrywise Home Savings", accounts["cowrywise-home"].Id, 3_733_600, Currency.Ngn, "Locked until Oct 8 (year not captured)", "Housing / move", "Verify current status", false),
-        H(ownerId, "rotating", "Rotating Family Savings", accounts["rotating-savings"].Id, 120_000_000, Currency.Ngn, "Expected payout", "Housing / move", "Expected payout, not an investment.", true)
+        H(ownerId, "emergency", "Cowrywise Emergency Fund", accounts["cowrywise-emergency"].Id, 146_830_100, Currency.Ngn, "Liquid/low-risk", "6-month emergency reserve", "Last-known. Confirm the current balance.", false),
+        H(ownerId, "mmf", "Cowrywise MMF", accounts["cowrywise-mmf"].Id, 245_698_600, Currency.Ngn, "Liquid/low-risk", "Medium-term liquidity / wealth", "Last-known.", false),
+        H(ownerId, "children", "Children Savings", accounts["cowrywise-children"].Id, 12_812_500, Currency.Ngn, "Locked 18 years", "Long-term children goal", "Last-known.", false),
+        H(ownerId, "cw-stocks", "Cowrywise Stocks", accounts["cowrywise-stocks"].Id, 32_691_000, Currency.Ngn, "Market", "Long-term investment", "Okomu + Presco. Last-known.", false),
+        H(ownerId, "bamboo-ng", "Bamboo Nigerian Stocks", accounts["bamboo-ng"].Id, 71_835_700, Currency.Ngn, "Market", "Long-term investment", "Last-known.", false),
+        H(ownerId, "bamboo-us", "Bamboo US Stocks", accounts["bamboo-us"].Id, 31_457, Currency.Usd, "Market", "Long-term investment", "Held in USD until an FX rate is entered.", false),
+        H(ownerId, "risevest", "Risevest Real Estate", accounts["risevest"].Id, 15_869, Currency.Usd, "Illiquid/longer-term", "Real estate diversification", "Held in USD until an FX rate is entered.", false),
+        H(ownerId, "home", "Cowrywise Home Savings", accounts["cowrywise-home"].Id, 3_733_600, Currency.Ngn, "Locked until Oct 8 at capture", "Housing / move", "Last-known.", false),
+        H(ownerId, "rotating", "Rotating Family Savings", accounts["rotating-savings"].Id, 120_000_000, Currency.Ngn, "Expected payout", "Housing / move", "Expected payout.", true)
     ];
 
     private static Holding H(Guid ownerId, string slug, string name, Guid accountId, long amount, Currency ccy,
@@ -414,18 +477,18 @@ public static class PlanSeeder
 
     private static List<FinancialRule> SeedRules(Guid ownerId) =>
     [
-        R(ownerId, "income", "Income rule", "Lifestyle runs on ₦543k salary.", "₦400k secondary income is strategic/uncertain."),
-        R(ownerId, "housing", "Housing rule", "Move only when dedicated housing capital is sufficient.", "Do not raid the emergency fund."),
-        R(ownerId, "emergency", "Emergency rule", "Protect the emergency fund.", "Use only for genuine emergencies."),
-        R(ownerId, "betting", "Betting rule", "Current budget = ₦0.", "Use paper/simulated testing for MatchPredictor."),
-        R(ownerId, "family", "Family rule", "Use the family allocation and irregular/giving fund.", "Do not automatically increase support every time cash is available."),
-        R(ownerId, "investment", "Investment rule", "Keep long-term money invested according to its purpose.", "Do not sell investments for routine spending."),
-        R(ownerId, "career", "Career rule", "Career/business tools should increase earning power.", "Track Railway and MatchPredictor separately."),
-        R(ownerId, "rent", "Rent rule", "Start next rent sinking fund immediately after moving.", "At ₦1.5m annual rent, target ₦125k/month."),
-        R(ownerId, "income-rise", "Income-rise rule", "Lifestyle rises slower than income.", "Send most increases to wealth/housing/retirement."),
-        R(ownerId, "ledger", "Ledger rule", "Record every transaction.", "Transfers are not spending."),
-        R(ownerId, "reconciliation", "Reconciliation rule", "Compare ledger to actual account balances.", "Mark UNRECONCILED instead of guessing."),
-        R(ownerId, "review", "Monthly review", "Review income, spending, savings, investments, behaviour and net worth.", "Adjust next month based on actuals.")
+        R(ownerId, "income", "Income", "Lifestyle uses the ₦543k salary.", "The ₦400k secondary income stays on its own waterfall."),
+        R(ownerId, "housing", "Housing", "Move from dedicated housing capital.", "The emergency fund stays out of the move."),
+        R(ownerId, "emergency", "Emergency", "Use only for genuine emergencies.", "The target is provisional until post-move essentials are known."),
+        R(ownerId, "betting", "Betting", "Budget is ₦0.", "MatchPredictor is tested on paper."),
+        R(ownerId, "family", "Family", "Use the family allocation and irregular/giving fund.", "One-off support stays one-off."),
+        R(ownerId, "investment", "Investments", "Long-term money stays invested for its purpose.", "Routine spending does not come from investments."),
+        R(ownerId, "career", "Career", "Career tools are tracked on the business ledger.", "Railway and MatchPredictor stay separate from personal spend."),
+        R(ownerId, "rent", "Rent", "Next rent starts after moving.", "Target ₦125k/month toward ₦1.5m."),
+        R(ownerId, "income-rise", "Income rise", "Lifestyle rises slower than income.", "Most increases go to wealth, housing, or retirement."),
+        R(ownerId, "ledger", "Ledger", "Every transaction is recorded.", "Transfers are not spending."),
+        R(ownerId, "reconciliation", "Reconciliation", "Compare the ledger to the account balance.", "A mismatch stays UNRECONCILED."),
+        R(ownerId, "review", "Monthly review", "Review income, spending, savings, and net worth.", "Next month uses the actuals.")
     ];
 
     private static FinancialRule R(Guid ownerId, string code, string title, string action, string control) =>
@@ -439,7 +502,7 @@ public static class PlanSeeder
             Topic = "sportybet-august",
             AsOf = new DateOnly(2026, 8, 31),
             Provenance = Provenance.LastKnown,
-            Body = "August deposits ₦48,787; withdrawals ₦21,000; wallet screenshot ₦2,039.19. This does not match the single ₦11,000 SportyBet ledger line. Both facts are kept. Net betting result is UNKNOWN without stakes and winnings."
+            Body = "August deposits ₦48,787; withdrawals ₦21,000; wallet ₦2,039.19. Net betting result is unknown."
         },
         new()
         {
@@ -447,7 +510,7 @@ public static class PlanSeeder
             Topic = "matchpredictor-placeholders",
             AsOf = CaptureDate,
             Provenance = Provenance.Plan,
-            Body = "Railway hosting, domain (~$15/year), AI tokens (~$5) and AdSense are listed in the workbook at ₦0 or as estimates. Neon DB ₦15,000 is a known plan estimate, labelled ESTIMATE until an actual charge is entered. No revenue has been recorded."
+            Body = "Railway ₦16,000, Neon ₦15,000, and AI ₦14,000 are plan estimates until an actual charge is entered. Domain is ~$15/year. No revenue has been recorded."
         },
         new()
         {
@@ -455,7 +518,15 @@ public static class PlanSeeder
             Topic = "unknown-balances",
             AsOf = CaptureDate,
             Provenance = Provenance.Unknown,
-            Body = "Stanbic after 1 Sep, PiggyVest, Access Bank, RSA/pension, and any FX rate were not supplied. Enter them before using those figures."
+            Body = "PiggyVest, Access Bank, Stanbic after the ledger, and any FX rate are unknown until entered."
+        },
+        new()
+        {
+            OwnerId = ownerId,
+            Topic = SnapshotTopic,
+            AsOf = CaptureDate,
+            Provenance = Provenance.Plan,
+            Body = SnapshotName
         }
     ];
 
@@ -474,8 +545,9 @@ public static class PlanSeeder
     private static List<Subscription> SeedSubscriptions(Guid ownerId, Dictionary<string, FinancialAccount> accounts) =>
     [
         new() { OwnerId = ownerId, Name = "Cursor", AmountMinor = 2_800_000, Currency = Currency.Ngn, Frequency = SubscriptionFrequency.Monthly, PaymentAccountId = accounts["access"].Id, NextBillingDate = new DateOnly(2026, 10, 27), Category = "Software", IsBusiness = true, IsActive = true },
-        new() { OwnerId = ownerId, Name = "Railway", AmountMinor = 0, Currency = Currency.Ngn, Frequency = SubscriptionFrequency.Monthly, PaymentAccountId = accounts["access"].Id, NextBillingDate = new DateOnly(2026, 10, 1), Category = "Hosting", IsBusiness = true, IsActive = true },
+        new() { OwnerId = ownerId, Name = "Railway", AmountMinor = 1_600_000, Currency = Currency.Ngn, Frequency = SubscriptionFrequency.Monthly, PaymentAccountId = accounts["access"].Id, NextBillingDate = new DateOnly(2026, 10, 1), Category = "Hosting", IsBusiness = true, IsActive = true },
         new() { OwnerId = ownerId, Name = "Neon DB", AmountMinor = 1_500_000, Currency = Currency.Ngn, Frequency = SubscriptionFrequency.Monthly, PaymentAccountId = accounts["access"].Id, NextBillingDate = new DateOnly(2026, 10, 1), Category = "Database", IsBusiness = true, IsActive = true },
+        new() { OwnerId = ownerId, Name = "AI tokens", AmountMinor = 1_400_000, Currency = Currency.Ngn, Frequency = SubscriptionFrequency.Monthly, PaymentAccountId = accounts["access"].Id, NextBillingDate = new DateOnly(2026, 10, 1), Category = "AI", IsBusiness = true, IsActive = true },
         new() { OwnerId = ownerId, Name = "Domain", AmountMinor = 0, Currency = Currency.Usd, Frequency = SubscriptionFrequency.Yearly, PaymentAccountId = accounts["access"].Id, NextBillingDate = new DateOnly(2026, 12, 1), Category = "Domain", IsBusiness = true, IsActive = true }
     ];
 
@@ -493,18 +565,18 @@ public static class PlanSeeder
                 Notes = notes
             });
 
-        Snap("kuda", 0, Currency.Ngn, Provenance.LastKnown, "Last confirmed ₦0.");
-        Snap("opay", 0, Currency.Ngn, Provenance.LastKnown, "Last confirmed ₦0 after the brother transfer.");
-        Snap("cash", 180_000, Currency.Ngn, Provenance.LastKnown, "Last known 1 Sep 2026.");
-        Snap("cowrywise-emergency", 153_748_800, Currency.Ngn, Provenance.LastKnown, "Verify current.");
-        Snap("cowrywise-mmf", 232_521_200, Currency.Ngn, Provenance.LastKnown, "Verify current.");
-        Snap("cowrywise-children", 10_692_200, Currency.Ngn, Provenance.LastKnown, "Verify current.");
-        Snap("cowrywise-home", 3_733_600, Currency.Ngn, Provenance.LastKnown, "Verify current.");
-        Snap("cowrywise-stocks", 32_691_000, Currency.Ngn, Provenance.LastKnown, "Approximate.");
-        Snap("bamboo-ng", 59_500_000, Currency.Ngn, Provenance.LastKnown, "Approximate.");
-        Snap("bamboo-us", 60_000, Currency.Usd, Provenance.LastKnown, "USD. No FX conversion.");
-        Snap("risevest", 15_700, Currency.Usd, Provenance.LastKnown, "USD. No FX conversion.");
-        Snap("sportybet", 203_919, Currency.Ngn, Provenance.LastKnown, "Wallet screenshot ₦2,039.19. Partial.");
+        Snap("kuda", 60_000, Currency.Ngn, Provenance.LastKnown, "Last-known from Assets.");
+        Snap("opay", 115_500, Currency.Ngn, Provenance.LastKnown, "Last-known from Assets.");
+        Snap("cash", 380_000, Currency.Ngn, Provenance.LastKnown, "Last-known from Assets.");
+        Snap("cowrywise-emergency", 146_830_100, Currency.Ngn, Provenance.LastKnown, "Last-known from Assets.");
+        Snap("cowrywise-mmf", 245_698_600, Currency.Ngn, Provenance.LastKnown, "Last-known from Assets.");
+        Snap("cowrywise-children", 12_812_500, Currency.Ngn, Provenance.LastKnown, "Last-known from Assets.");
+        Snap("cowrywise-home", 3_733_600, Currency.Ngn, Provenance.LastKnown, "Last-known from Assets.");
+        Snap("cowrywise-stocks", 32_691_000, Currency.Ngn, Provenance.LastKnown, "Last-known from Assets.");
+        Snap("bamboo-ng", 71_835_700, Currency.Ngn, Provenance.LastKnown, "Last-known from Assets.");
+        Snap("bamboo-us", 31_457, Currency.Usd, Provenance.LastKnown, "USD. No FX conversion.");
+        Snap("risevest", 15_869, Currency.Usd, Provenance.LastKnown, "USD. No FX conversion.");
+        Snap("sportybet", 203_919, Currency.Ngn, Provenance.LastKnown, "Wallet screenshot ₦2,039.19.");
     }
 
     private static void SeedExampleAssignments(FinanceDbContext db, Dictionary<string, FinancialAccount> accounts, Dictionary<string, Envelope> envelopes)
@@ -583,29 +655,11 @@ public static class PlanSeeder
             db.Transactions.Add(tx);
         }
 
-        Tx(new(2026, 8, 26), "stanbic", TransactionType.Income, "salary", "Main salary", 54_300_000, 0, 0, false, "Salary cycle");
-        Tx(new(2026, 8, 26), "stanbic", TransactionType.Transfer, "transfer", "Transfer to OPay", 0, 20_000_000, 10_375, true, "₦50 transfer fee + ₦3.75 + ₦50 stamp duty", "opay");
-        Tx(new(2026, 8, 26), "opay", TransactionType.Transfer, "transfer", "Received from Stanbic", 20_000_000, 0, 0, true, "Counter-entry", "stanbic");
-        Tx(new(2026, 8, 26), "opay", TransactionType.Debt, "debt", "OPay loan repayment", 0, 5_672_000, 0, false, "Loan repaid");
-        Tx(new(2026, 8, 26), "opay", TransactionType.Fee, "bank-charges", "Loan stamp duty", 0, 5_000, 0, false, null);
-        Tx(new(2026, 8, 26), "opay", TransactionType.Expense, "betting", "SportyBet funding", 0, 1_100_000, 0, false, "Plan currently allocates ₦0 to betting", env: "betting");
-        Tx(new(2026, 8, 27), "opay", TransactionType.Expense, "food", "Lunch", 0, 430_000, 0, false, null, env: "food");
-        Tx(new(2026, 8, 27), "opay", TransactionType.Expense, "digital", "Video-call app coins", 0, 250_400, 0, false, null);
-        Tx(new(2026, 8, 27), "opay", TransactionType.Savings, "rotating", "Rotating contribution", 0, 10_000_000, 0, false, null, "rotating-savings", env: "rotating");
-        Tx(new(2026, 8, 27), "opay", TransactionType.Withdrawal, "cash", "Cash withdrawal", 0, 500_000, 10_000, false, "₦100 withdrawal fee", "cash");
-        Tx(new(2026, 8, 27), "stanbic", TransactionType.Debt, "debt", "Church Bazaar debt", 0, 5_007_688, 0, false, "₦50k + ₦25 + ₦1.88 + ₦50 stamp duty");
-        Tx(new(2026, 8, 27), "stanbic", TransactionType.Expense, "data-airtime", "Monthly data", 0, 3_000_000, 0, false, null, env: "data-airtime");
-        Tx(new(2026, 8, 27), "stanbic", TransactionType.Expense, "software", "Cursor", 0, 2_800_000, 0, false, "Actual recent charge", env: "career-business");
-        Tx(new(2026, 8, 27), "opay", TransactionType.Expense, "family", "Cousin support", 0, 100_000, 0, false, "One-off. Not a recurring obligation.", env: "family");
-        Tx(new(2026, 8, 28), "opay", TransactionType.Expense, "airtime", "MTN recharge", 0, 200_000, 0, false, null, env: "data-airtime");
-        Tx(new(2026, 8, 28), "opay", TransactionType.Expense, "food", "Breakfast", 0, 192_000, 0, false, null, env: "food");
-        Tx(new(2026, 9, 1), "opay", TransactionType.Expense, "food", "Lunch", 0, 390_000, 0, false, null, env: "food");
-        Tx(new(2026, 9, 1), "opay", TransactionType.Expense, "family", "Brother support", 0, 1_509_000, 0, false, "Remaining OPay balance sent to brother. One-off.", env: "family");
-        Tx(new(2026, 9, 1), "cash", TransactionType.Expense, "transport", "Transport", 0, 50_000, 0, false, null, env: "transport");
-        Tx(new(2026, 8, 27), "cash", TransactionType.Deposit, "cash", "Received from OPay", 500_000, 0, 0, true, "Counter-entry", "opay");
-        Tx(new(2026, 8, 27), "cash", TransactionType.Expense, "transport", "Transport", 0, 150_000, 0, false, null, env: "transport");
-        Tx(new(2026, 8, 27), "cash", TransactionType.Expense, "groceries", "Sugar", 0, 60_000, 0, false, null, env: "food");
-        Tx(new(2026, 8, 27), "cash", TransactionType.Expense, "groceries", "Milk", 0, 60_000, 0, false, null, env: "food");
-        Tx(new(2026, 8, 27), "cowrywise-home", TransactionType.Savings, "home", "Automated home savings", 0, 500_000, 0, false, "Workbook recorded this as an outflow on Cowrywise Home. Verify whether the contribution actually arrived from another account. Sign was not silently flipped.", env: "home");
+        Tx(new(2026, 9, 25), "stanbic", TransactionType.Income, "salary", "Main salary", 54_300_000, 0, 0, false, null);
+        Tx(new(2026, 9, 25), "stanbic", TransactionType.Transfer, "transfer", "Move funds from Stanbic to Opay", 0, 30_000_000, 2_500, true, null, "opay");
+        Tx(new(2026, 9, 26), "stanbic", TransactionType.Expense, "irregular-giving", "Bought books for Silver", 0, 450_000, 700, false, null, env: "irregular-giving");
+        Tx(new(2026, 9, 26), "stanbic", TransactionType.Expense, "data-airtime", "Mifi subscription for MTN", 0, 3_000_000, 0, false, null, env: "data-airtime");
+        Tx(new(2026, 9, 26), "opay", TransactionType.Expense, "food", "Bought Snacks", 0, 260_000, 0, false, null, env: "food");
+        Tx(new(2026, 9, 26), "opay", TransactionType.Expense, "family", "Bought Eggs for the house", 0, 540_000, 0, false, null, env: "family");
     }
 }

@@ -1,9 +1,13 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { Shell, Card, MoneyView, Reveal } from "@/components/ui";
+import { FormEvent, useEffect, useState } from "react";
+import { Shell, Card, Reveal } from "@/components/ui";
 import { api } from "@/lib/api";
 import type { AllocationLine, BudgetItem, CalendarItem, FamilyRow, IncomePreview } from "@/lib/types";
+
+function major(value: number | null | undefined) {
+  return value == null ? "" : String(value);
+}
 
 export default function BudgetPage() {
   const [items, setItems] = useState<BudgetItem[]>([]);
@@ -11,22 +15,50 @@ export default function BudgetPage() {
   const [family, setFamily] = useState<FamilyRow[]>([]);
   const [calendar, setCalendar] = useState<CalendarItem[]>([]);
   const [preview, setPreview] = useState<IncomePreview | null>(null);
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [familyDrafts, setFamilyDrafts] = useState<Record<string, string>>({});
+  const [message, setMessage] = useState<string | null>(null);
   const today = new Date();
   const date = today.toISOString().slice(0, 10);
 
-  useEffect(() => {
-    void Promise.all([
-      api.budget().then(setItems),
-      api.plan("salary").then(setSalary),
-      api.family().then(setFamily),
-      api.calendar(today.getFullYear(), today.getMonth() + 1).then(setCalendar)
+  async function load() {
+    const [budgetItems, salaryLines, familyRows, calendarItems] = await Promise.all([
+      api.budget(),
+      api.plan("salary"),
+      api.family(),
+      api.calendar(today.getFullYear(), today.getMonth() + 1)
     ]);
-  }, []);
+    setItems(budgetItems);
+    setSalary(salaryLines);
+    setFamily(familyRows);
+    setCalendar(calendarItems);
+    setDrafts(Object.fromEntries(budgetItems.filter((item) => item.category !== "Betting").map((item) => [item.category, major(item.budget.major)])));
+    setFamilyDrafts(Object.fromEntries(familyRows.filter((row) => row.kind === "Recurring").map((row) => [row.id, major(row.amount.major)])));
+  }
+
+  useEffect(() => { void load(); }, []);
+
+  async function saveBudget(event: FormEvent, category: string) {
+    event.preventDefault();
+    setMessage(null);
+    await api.updateBudget(category, { amount: Number(drafts[category]) });
+    await load();
+    setMessage(`${category} saved.`);
+  }
+
+  async function saveFamily(event: FormEvent, row: FamilyRow) {
+    event.preventDefault();
+    setMessage(null);
+    await api.updateFamily(row.id, { amount: Number(familyDrafts[row.id]), purpose: row.purpose });
+    await load();
+    setMessage(`${row.recipient} saved.`);
+  }
 
   return (
     <Shell>
       <h1>Am I following this month&apos;s plan?</h1>
-      <p className="lede">Budget, actual, remaining, and a sentence. Transfers are not spending. Family one-offs stay one-offs.</p>
+      <p className="lede">Budget, actual, and remaining for each category. Transfers are not spending.</p>
+      {message && <p className="sentence">{message}</p>}
 
       <div className="row">
         <button className="btn" onClick={() => api.incomePreview("salary", date).then(setPreview)}>Preview salary waterfall</button>
@@ -47,7 +79,18 @@ export default function BudgetPage() {
           <Card key={item.category} title={item.category}>
             <span className={`badge ${item.status.toLowerCase()}`}>{item.status}</span>
             <p className="sentence">{item.sentence}</p>
-            <p className="lede">Budget {item.budget.formatted} · actual {item.actual.formatted} · remaining {item.remaining.formatted} · {item.percentUsed}</p>
+            <p className="lede">Actual {item.actual.formatted} · remaining {item.remaining.formatted} · {item.percentUsed}</p>
+            {item.category !== "Betting" && (
+              <form className="row" onSubmit={(event) => saveBudget(event, item.category)}>
+                <input
+                  value={drafts[item.category] ?? ""}
+                  onChange={(e) => setDrafts((current) => ({ ...current, [item.category]: e.target.value }))}
+                  inputMode="decimal"
+                  aria-label={`${item.category} budget`}
+                />
+                <button className="btn" type="submit">Save</button>
+              </form>
+            )}
           </Card>
         ))}
       </div>
@@ -60,8 +103,22 @@ export default function BudgetPage() {
 
       <Card title="Family commitments vs one-off support">
         {family.map((row) => (
-          <p key={row.id} className="sentence">{row.recipient} · {row.kind} · {row.amount.formatted} · {row.purpose}</p>
+          <div key={row.id} className="stack" style={{ marginBottom: 12 }}>
+            <p className="sentence">{row.recipient} · {row.kind} · {row.amount.formatted} · {row.purpose}</p>
+            {row.kind === "Recurring" && (
+              <form className="row" onSubmit={(event) => saveFamily(event, row)}>
+                <input
+                  value={familyDrafts[row.id] ?? ""}
+                  onChange={(e) => setFamilyDrafts((current) => ({ ...current, [row.id]: e.target.value }))}
+                  inputMode="decimal"
+                  aria-label={`${row.recipient} amount`}
+                />
+                <button className="btn" type="submit">Save</button>
+              </form>
+            )}
+          </div>
         ))}
+        <p className="lede">Changing a family amount updates the plan. It does not move money between accounts.</p>
       </Card>
 
       <Card title="This month on the calendar">

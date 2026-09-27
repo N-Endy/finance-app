@@ -36,7 +36,7 @@ export default function AccountsPage() {
   return (
     <Shell>
       <h1>Which account should hold what?</h1>
-      <p className="lede">Each account has one job. A green status is never painted when the balance is UNKNOWN.</p>
+      <p className="lede">Each account has one job. Unknown balances stay blank.</p>
       <div className="stack">
         {accounts.map((account) => (
           <div key={account.id}>

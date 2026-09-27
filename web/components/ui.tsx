@@ -74,7 +74,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
       {moreOpen && (
         <div className="more-backdrop" onClick={() => setMoreOpen(false)}>
           <div className="more-sheet" role="dialog" aria-label="More screens" onClick={(event) => event.stopPropagation()}>
-            <p className="lede">The rest of the ledger</p>
+            <p className="lede">More</p>
             {moreLinks.map(([href, label]) => (
               <Link key={href} href={href} className={isActive(path, href) ? "active" : ""} onClick={() => setMoreOpen(false)}>
                 {label}
@@ -91,7 +91,7 @@ export function MoneyView({ money, large }: { money: Money; large?: boolean }) {
   const provenance = money.provenance ?? money.provenanceLabel ?? "unknown";
   return (
     <div>
-      <div className="figure" style={{ fontSize: large ? 32 : 24 }}>{money.formatted}</div>
+      <div className={`figure${large ? " large" : ""}`}>{money.formatted}</div>
       <span className={`badge ${provenance}`}>{provenance.replace("_", " ")}</span>
       {money.asOf && <span className="badge">as of {money.asOf}</span>}
       {money.needed && <p className="sentence" style={{ marginTop: 8 }}>{money.needed}</p>}

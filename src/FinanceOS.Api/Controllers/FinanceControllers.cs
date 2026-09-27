@@ -143,6 +143,13 @@ public sealed class FinanceController(FinanceOsService finance) : ControllerBase
     [HttpGet("goals")]
     public Task<IReadOnlyList<GoalDto>> Goals(CancellationToken ct) => finance.GoalsAsync(ct);
 
+    [HttpPut("goals/{id:guid}")]
+    public async Task<IActionResult> UpdateGoal(Guid id, [FromBody] GoalWriteRequest request, CancellationToken ct)
+    {
+        await finance.UpdateGoalAsync(id, request.Target, request.Monthly, ct);
+        return Ok();
+    }
+
     [HttpPost("goals/housing/convert-to-next-rent")]
     public async Task<IActionResult> ConvertHousing(CancellationToken ct)
     {
@@ -152,6 +159,13 @@ public sealed class FinanceController(FinanceOsService finance) : ControllerBase
 
     [HttpGet("budget")]
     public Task<IReadOnlyList<BudgetItemDto>> Budget(CancellationToken ct) => finance.BudgetAsync(ct);
+
+    [HttpPut("budget/{category}")]
+    public async Task<IActionResult> UpdateBudget(string category, [FromBody] BudgetLineWriteRequest request, CancellationToken ct)
+    {
+        await finance.UpdateBudgetLineAsync(Uri.UnescapeDataString(category), request.Amount, ct);
+        return Ok();
+    }
 
     [HttpGet("holdings")]
     public Task<IReadOnlyList<HoldingDto>> Holdings(CancellationToken ct) => finance.HoldingsAsync(ct);
@@ -306,4 +320,6 @@ public sealed record ExchangeRateWriteRequest(string From, string To, decimal Ra
 public sealed record PensionWriteRequest(decimal? Balance, decimal? Employee, decimal? Employer, int? RetirementAge);
 public sealed record SplitRequest(int ReinvestPercent, int PersonalPercent);
 public sealed record FamilyLineWriteRequest(decimal Amount, string Purpose);
+public sealed record BudgetLineWriteRequest(decimal Amount);
+public sealed record GoalWriteRequest(decimal Target, decimal Monthly);
 public sealed record CsvImportRequest(string Csv);

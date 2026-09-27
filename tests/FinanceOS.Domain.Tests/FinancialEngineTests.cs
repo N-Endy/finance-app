@@ -202,7 +202,7 @@ public class FinancialEngineTests
         var result = EmergencyTarget.Resolve(null, 240_000_000);
         Assert.True(result.IsProvisional);
         Assert.Equal(240_000_000, result.TargetMinor);
-        Assert.Contains("not being invented", result.Sentence);
+        Assert.Contains("provisional", result.Sentence);
     }
 
     [Fact]

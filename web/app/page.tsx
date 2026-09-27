@@ -16,15 +16,15 @@ export default function HomePage() {
   }, []);
 
   if (error) return <Shell><p className="error">{error}</p></Shell>;
-  if (!data) return <Shell><p>Loading the ledger…</p></Shell>;
+  if (!data) return <Shell><p>Loading…</p></Shell>;
 
   return (
     <Shell>
       <h1>How am I doing financially?</h1>
-      <p className="lede">Open this screen and read the sentences first. Click a figure only when you want the arithmetic.</p>
+      <p className="lede">Net worth, spendable cash, and the jobs your money already has.</p>
 
       {data.unknowns.length > 0 && (
-        <Card title="Facts still required">
+        <Card title="Still to enter">
           <ul>{data.unknowns.map((item) => <li key={item}>{item}</li>)}</ul>
         </Card>
       )}

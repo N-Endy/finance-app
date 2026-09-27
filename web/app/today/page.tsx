@@ -17,7 +17,7 @@ export default function TodayPage() {
   return (
     <Shell>
       <h1>What should I do today?</h1>
-      <p className="lede">These are recommendations from your plan. Completing one records that you handled it. It does not move money at a bank.</p>
+      <p className="lede">Today&apos;s recommended actions. Completing one records that you handled it.</p>
       {error && <p className="error">{error}</p>}
       <div className="stack">
         {items.map((item) => (
