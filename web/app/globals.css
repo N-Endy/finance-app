@@ -105,6 +105,10 @@ label { font-size: 13px; color: var(--muted); display: block; margin-bottom: 6px
 }
 .btn.ghost { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
 .btn.warn { background: var(--alert); color: #fff7f5; }
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
 .error { color: var(--alert); }
 .table { width: 100%; border-collapse: collapse; }
 .table th, .table td { text-align: left; padding: 10px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }

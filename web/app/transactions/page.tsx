@@ -3,6 +3,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import { Shell, Card, Reveal } from "@/components/ui";
 import { api } from "@/lib/api";
+import { failMessage } from "@/lib/feedback";
 import type { Account, Preview, Transaction } from "@/lib/types";
 
 export default function TransactionsPage() {
@@ -11,6 +12,8 @@ export default function TransactionsPage() {
   const [text, setText] = useState("Lunch 4300 from OPay");
   const [preview, setPreview] = useState<Preview | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
   const [assistant, setAssistant] = useState("");
   const [answer, setAnswer] = useState<string | null>(null);
   const [showDetail, setShowDetail] = useState(false);
@@ -20,57 +23,105 @@ export default function TransactionsPage() {
     setRows(await api.transactions());
     setAccounts(await api.accounts());
   }
-  useEffect(() => { void load().catch((err: Error) => setError(err.message)); }, []);
+  useEffect(() => { void load().catch((err) => setError(failMessage(err))); }, []);
 
   async function previewQuick(event: FormEvent) {
     event.preventDefault();
     setError(null);
-    setPreview(await api.preview({ text }));
+    setBusy("preview");
+    try {
+      setPreview(await api.preview({ text }));
+    } catch (err) {
+      setError(failMessage(err));
+    } finally {
+      setBusy(null);
+    }
   }
 
   async function confirm() {
     if (!preview?.proposed || !preview.canCommit) return;
-    await api.createTx(preview.proposed);
-    setPreview(null);
-    setText("");
-    await load();
+    setError(null);
+    setMessage(null);
+    setBusy("confirm");
+    try {
+      await api.createTx(preview.proposed);
+      setPreview(null);
+      setText("");
+      await load();
+      setMessage("Recorded.");
+    } catch (err) {
+      setError(failMessage(err));
+    } finally {
+      setBusy(null);
+    }
   }
 
   async function submitDetail(event: FormEvent) {
     event.preventDefault();
-    const previewed = await api.preview({
-      detailed: {
-        date: detail.date,
-        type: detail.type,
-        accountId: detail.accountId,
-        counterpartyAccountId: detail.counterpartyAccountId || null,
-        amount: Number(detail.amount),
-        fee: 0,
-        currency: "NGN",
-        description: detail.description,
-        isBusiness: false,
-        isRecurring: false
-      }
-    });
-    setPreview(previewed);
+    setError(null);
+    setBusy("detail");
+    try {
+      setPreview(await api.preview({
+        detailed: {
+          date: detail.date,
+          type: detail.type,
+          accountId: detail.accountId,
+          counterpartyAccountId: detail.counterpartyAccountId || null,
+          amount: Number(detail.amount),
+          fee: 0,
+          currency: "NGN",
+          description: detail.description,
+          isBusiness: false,
+          isRecurring: false
+        }
+      }));
+    } catch (err) {
+      setError(failMessage(err));
+    } finally {
+      setBusy(null);
+    }
   }
 
   async function ask(event: FormEvent) {
     event.preventDefault();
-    const result = await api.ask(assistant);
-    setAnswer(result.answer + (result.missingFacts.length ? ` Missing: ${result.missingFacts.join("; ")}` : ""));
+    setError(null);
+    setBusy("ask");
+    try {
+      const result = await api.ask(assistant);
+      setAnswer(result.answer + (result.missingFacts.length ? ` Missing: ${result.missingFacts.join("; ")}` : ""));
+    } catch (err) {
+      setError(failMessage(err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function voidRow(id: string) {
+    setError(null);
+    setMessage(null);
+    setBusy(id);
+    try {
+      await api.voidTx(id);
+      await load();
+      setMessage("Voided.");
+    } catch (err) {
+      setError(failMessage(err));
+    } finally {
+      setBusy(null);
+    }
   }
 
   return (
     <Shell>
       <h1>Where did my money go?</h1>
       <p className="lede">Record a transaction, then confirm before it is saved.</p>
+      {message && <p className="sentence">{message}</p>}
       {error && <p className="error">{error}</p>}
 
       <Card title="Quick entry">
         <form className="stack" onSubmit={previewQuick}>
           <input value={text} onChange={(e) => setText(e.target.value)} placeholder="Lunch 4300 from OPay" />
-          <button className="btn" type="submit">Parse and preview</button>
+          <button className="btn" type="submit" disabled={busy === "preview"}>Parse and preview</button>
         </form>
       </Card>
 
@@ -95,7 +146,7 @@ export default function TransactionsPage() {
               )}
               <input value={detail.amount} onChange={(e) => setDetail({ ...detail, amount: e.target.value })} placeholder="Amount" />
               <input value={detail.description} onChange={(e) => setDetail({ ...detail, description: e.target.value })} placeholder="Description" />
-              <button className="btn" type="submit">Preview detailed entry</button>
+              <button className="btn" type="submit" disabled={busy === "detail"}>Preview detailed entry</button>
             </form>
           </Card>
         </Reveal>
@@ -104,7 +155,7 @@ export default function TransactionsPage() {
       <Card title="Ask the ledger">
         <form className="stack" onSubmit={ask}>
           <input value={assistant} onChange={(e) => setAssistant(e.target.value)} placeholder="How much has MatchPredictor cost me?" />
-          <button className="btn ghost" type="submit">Ask</button>
+          <button className="btn ghost" type="submit" disabled={busy === "ask"}>Ask</button>
         </form>
         {answer && <Reveal watch={answer}><p className="sentence">{answer}</p></Reveal>}
       </Card>
@@ -115,7 +166,7 @@ export default function TransactionsPage() {
             <p className="sentence">{preview.summary}</p>
             {preview.questions.map((q) => <p key={q} className="error">{q}</p>)}
             {preview.balanceImpacts.map((q) => <p key={q}>{q}</p>)}
-            {preview.canCommit && <button className="btn" onClick={confirm}>Confirm and record</button>}
+            {preview.canCommit && <button className="btn" disabled={busy === "confirm"} onClick={() => void confirm()}>Confirm and record</button>}
           </Card>
         </Reveal>
       )}
@@ -130,7 +181,7 @@ export default function TransactionsPage() {
               <td>{row.type}{row.isTransfer ? " · transfer" : ""}{row.isBetting ? " · betting" : ""}</td>
               <td>{row.description}</td>
               <td>{row.amount.formatted}</td>
-              <td><button className="btn ghost" onClick={() => api.voidTx(row.id).then(load)}>Void</button></td>
+              <td><button className="btn ghost" disabled={busy === row.id} onClick={() => void voidRow(row.id)}>Void</button></td>
             </tr>
           ))}
         </tbody>

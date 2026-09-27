@@ -8,13 +8,14 @@ import type {
 const API = process.env.NEXT_PUBLIC_API_URL ?? "";
 
 async function request<T = never>(path: string, init?: RequestInit): Promise<T> {
+  const hasBody = init?.body != null && init.body !== "";
   let response: Response;
   try {
     response = await fetch(`${API}${path}`, {
       ...init,
       credentials: "include",
       headers: {
-        "Content-Type": "application/json",
+        ...(hasBody ? { "Content-Type": "application/json" } : {}),
         ...(init?.headers ?? {})
       }
     });
@@ -32,7 +33,9 @@ async function request<T = never>(path: string, init?: RequestInit): Promise<T> 
     throw new Error(body.error ?? "Request failed.");
   }
   if (response.status === 204) return undefined as T;
-  return response.json();
+  const text = await response.text();
+  if (!text.trim()) return undefined as T;
+  return JSON.parse(text) as T;
 }
 
 export const api = {

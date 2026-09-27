@@ -3,6 +3,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import { Shell, Card } from "@/components/ui";
 import { api } from "@/lib/api";
+import { failMessage } from "@/lib/feedback";
 import type { AlertItem, Rule, Settings, Subscription, Violation } from "@/lib/types";
 
 export default function SettingsPage() {
@@ -14,6 +15,8 @@ export default function SettingsPage() {
   const [allowance, setAllowance] = useState("70000");
   const [csv, setCsv] = useState("Date,Account,Type,Category,Description,Amount,Fee,Currency\n");
   const [message, setMessage] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
 
   useEffect(() => {
     void Promise.all([
@@ -22,27 +25,67 @@ export default function SettingsPage() {
       api.violations().then(setViolations),
       api.subscriptions().then(setSubs),
       api.alerts().then(setAlerts)
-    ]);
+    ]).catch((err) => setError(failMessage(err)));
   }, []);
 
   async function save(event: FormEvent) {
     event.preventDefault();
-    await api.updateSettings({ opayAllowance: Number(allowance) });
-    setSettings(await api.settings());
-    setMessage("OPay allowance saved. Overspend alerts can now use this single number.");
+    setError(null);
+    setMessage(null);
+    setBusy("allowance");
+    try {
+      await api.updateSettings({ opayAllowance: Number(allowance) });
+      setSettings(await api.settings());
+      setMessage("OPay allowance saved. Overspend alerts can now use this single number.");
+    } catch (err) {
+      setError(failMessage(err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function importCsv(event: FormEvent) {
+    event.preventDefault();
+    setError(null);
+    setMessage(null);
+    setBusy("import");
+    try {
+      const result = await api.importCsv(csv);
+      setMessage(`Imported ${result.imported} rows.`);
+    } catch (err) {
+      setError(failMessage(err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function resetLedger() {
+    setError(null);
+    setMessage(null);
+    setBusy("delete");
+    try {
+      await api.deleteAll();
+      setMessage("Data reset to the plan snapshot.");
+    } catch (err) {
+      setError(failMessage(err));
+    } finally {
+      setBusy(null);
+    }
   }
 
   return (
     <Shell>
       <h1>Settings</h1>
       <p className="lede">Allowance, alerts, export, and a reset back to the plan snapshot.</p>
+      {message && <p className="sentence">{message}</p>}
+      {error && <p className="error">{error}</p>}
 
       {settings && (
         <Card title="OPay allowance and alert bands">
           <p className="sentence">Current allowance: {settings.opayAllowance.formatted}. Band used by the plan: ₦60,000–₦80,000.</p>
           <form className="row" onSubmit={save}>
             <input value={allowance} onChange={(e) => setAllowance(e.target.value)} />
-            <button className="btn" type="submit">Save allowance</button>
+            <button className="btn" type="submit" disabled={busy === "allowance"}>Save allowance</button>
           </form>
           <p className="lede">Watch {settings.watchPercent}% · warning {settings.warningPercent}% · over {settings.overBudgetPercent}% · MatchPredictor split {settings.businessReinvestPercent}/{settings.businessPersonalPercent}</p>
         </Card>
@@ -75,16 +118,15 @@ export default function SettingsPage() {
       </Card>
 
       <Card title="CSV import">
-        <form className="stack" onSubmit={async (event) => { event.preventDefault(); const result = await api.importCsv(csv); setMessage(`Imported ${result.imported} rows.`); }}>
+        <form className="stack" onSubmit={importCsv}>
           <textarea rows={6} value={csv} onChange={(e) => setCsv(e.target.value)} />
-          <button className="btn" type="submit">Import CSV</button>
+          <button className="btn" type="submit" disabled={busy === "import"}>Import CSV</button>
         </form>
       </Card>
 
       <Card title="Delete and reseed">
-        <button className="btn warn" onClick={() => api.deleteAll().then(() => setMessage("Data reset to the plan snapshot."))}>Delete my ledger and restore the plan snapshot</button>
+        <button className="btn warn" disabled={busy === "delete"} onClick={() => void resetLedger()}>Delete my ledger and restore the plan snapshot</button>
       </Card>
-      {message && <p className="sentence">{message}</p>}
     </Shell>
   );
 }

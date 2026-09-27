@@ -3,6 +3,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import { Shell, Card, Reveal } from "@/components/ui";
 import { api } from "@/lib/api";
+import { failMessage } from "@/lib/feedback";
 import type { AllocationLine, BudgetItem, CalendarItem, FamilyRow, IncomePreview } from "@/lib/types";
 
 function major(value: number | null | undefined) {
@@ -18,6 +19,8 @@ export default function BudgetPage() {
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [familyDrafts, setFamilyDrafts] = useState<Record<string, string>>({});
   const [message, setMessage] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
   const today = new Date();
   const date = today.toISOString().slice(0, 10);
 
@@ -36,22 +39,68 @@ export default function BudgetPage() {
     setFamilyDrafts(Object.fromEntries(familyRows.filter((row) => row.kind === "Recurring").map((row) => [row.id, major(row.amount.major)])));
   }
 
-  useEffect(() => { void load(); }, []);
+  useEffect(() => { void load().catch((err) => setError(failMessage(err))); }, []);
 
   async function saveBudget(event: FormEvent, category: string) {
     event.preventDefault();
+    setError(null);
     setMessage(null);
-    await api.updateBudget(category, { amount: Number(drafts[category]) });
-    await load();
-    setMessage(`${category} saved.`);
+    setBusy(category);
+    try {
+      await api.updateBudget(category, { amount: Number(drafts[category]) });
+      await load();
+      setMessage(`${category} saved.`);
+    } catch (err) {
+      setError(failMessage(err));
+    } finally {
+      setBusy(null);
+    }
   }
 
   async function saveFamily(event: FormEvent, row: FamilyRow) {
     event.preventDefault();
+    setError(null);
     setMessage(null);
-    await api.updateFamily(row.id, { amount: Number(familyDrafts[row.id]), purpose: row.purpose });
-    await load();
-    setMessage(`${row.recipient} saved.`);
+    setBusy(row.id);
+    try {
+      await api.updateFamily(row.id, { amount: Number(familyDrafts[row.id]), purpose: row.purpose });
+      await load();
+      setMessage(`${row.recipient} saved.`);
+    } catch (err) {
+      setError(failMessage(err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function previewIncome(source: "salary" | "secondary") {
+    setError(null);
+    setBusy(source);
+    try {
+      setPreview(await api.incomePreview(source, date));
+    } catch (err) {
+      setError(failMessage(err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function confirmIncome() {
+    if (!preview) return;
+    const source = preview.planName.includes("Secondary") ? "secondary" : "salary";
+    setError(null);
+    setMessage(null);
+    setBusy("confirm");
+    try {
+      await api.incomeConfirm(source, date);
+      setPreview(null);
+      await load();
+      setMessage("Recorded planned movements.");
+    } catch (err) {
+      setError(failMessage(err));
+    } finally {
+      setBusy(null);
+    }
   }
 
   return (
@@ -59,17 +108,18 @@ export default function BudgetPage() {
       <h1>Am I following this month&apos;s plan?</h1>
       <p className="lede">Budget, actual, and remaining for each category. Transfers are not spending.</p>
       {message && <p className="sentence">{message}</p>}
+      {error && <p className="error">{error}</p>}
 
       <div className="row">
-        <button className="btn" onClick={() => api.incomePreview("salary", date).then(setPreview)}>Preview salary waterfall</button>
-        <button className="btn ghost" onClick={() => api.incomePreview("secondary", date).then(setPreview)}>Preview ₦400k waterfall</button>
+        <button className="btn" disabled={busy === "salary"} onClick={() => void previewIncome("salary")}>Preview salary waterfall</button>
+        <button className="btn ghost" disabled={busy === "secondary"} onClick={() => void previewIncome("secondary")}>Preview ₦400k waterfall</button>
       </div>
       {preview && (
         <Reveal watch={preview.planName}>
           <Card title={preview.planName}>
             <p className="sentence">{preview.sentence}</p>
             <ul>{preview.lines.map((line) => <li key={line.label}>{line.label}: {line.amount.formatted}</li>)}</ul>
-            {preview.canConfirm && <button className="btn" onClick={() => api.incomeConfirm(preview.planName.includes("Secondary") ? "secondary" : "salary", date).then(() => setPreview(null))}>Confirm and record planned movements</button>}
+            {preview.canConfirm && <button className="btn" disabled={busy === "confirm"} onClick={() => void confirmIncome()}>Confirm and record planned movements</button>}
           </Card>
         </Reveal>
       )}
@@ -88,7 +138,7 @@ export default function BudgetPage() {
                   inputMode="decimal"
                   aria-label={`${item.category} budget`}
                 />
-                <button className="btn" type="submit">Save</button>
+                <button className="btn" type="submit" disabled={busy === item.category}>Save</button>
               </form>
             )}
           </Card>
@@ -113,7 +163,7 @@ export default function BudgetPage() {
                   inputMode="decimal"
                   aria-label={`${row.recipient} amount`}
                 />
-                <button className="btn" type="submit">Save</button>
+                <button className="btn" type="submit" disabled={busy === row.id}>Save</button>
               </form>
             )}
           </div>

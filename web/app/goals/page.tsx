@@ -3,12 +3,15 @@
 import { FormEvent, useEffect, useState } from "react";
 import { Shell, Card, MoneyView } from "@/components/ui";
 import { api } from "@/lib/api";
+import { failMessage } from "@/lib/feedback";
 import type { Goal } from "@/lib/types";
 
 export default function GoalsPage() {
   const [goals, setGoals] = useState<Goal[]>([]);
   const [drafts, setDrafts] = useState<Record<string, { target: string; monthly: string }>>({});
   const [message, setMessage] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
 
   async function load() {
     const rows = await api.goals();
@@ -19,14 +22,23 @@ export default function GoalsPage() {
     }])));
   }
 
-  useEffect(() => { void load(); }, []);
+  useEffect(() => { void load().catch((err) => setError(failMessage(err))); }, []);
 
   async function save(event: FormEvent, goal: Goal) {
     event.preventDefault();
     const draft = drafts[goal.id];
-    await api.updateGoal(goal.id, { target: Number(draft.target), monthly: Number(draft.monthly) });
-    await load();
-    setMessage(`${goal.name} saved.`);
+    setError(null);
+    setMessage(null);
+    setBusyId(goal.id);
+    try {
+      await api.updateGoal(goal.id, { target: Number(draft.target), monthly: Number(draft.monthly) });
+      await load();
+      setMessage(`${goal.name} saved.`);
+    } catch (err) {
+      setError(failMessage(err));
+    } finally {
+      setBusyId(null);
+    }
   }
 
   return (
@@ -34,6 +46,7 @@ export default function GoalsPage() {
       <h1>What am I building toward?</h1>
       <p className="lede">Targets and monthly contributions can be edited. Progress uses the latest labelled balance.</p>
       {message && <p className="sentence">{message}</p>}
+      {error && <p className="error">{error}</p>}
       <div className="grid two">
         {goals.map((goal) => {
           const current = goal.current.minor ?? 0;
@@ -62,7 +75,7 @@ export default function GoalsPage() {
                     inputMode="decimal"
                   />
                 </label>
-                <button className="btn" type="submit">Save</button>
+                <button className="btn" type="submit" disabled={busyId === goal.id}>Save</button>
               </form>
               {goal.isAspiration && <p className="lede">Aspiration</p>}
             </Card>

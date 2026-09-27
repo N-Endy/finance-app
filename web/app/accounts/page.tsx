@@ -3,6 +3,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import { Shell, Card, MoneyView, Reveal } from "@/components/ui";
 import { api } from "@/lib/api";
+import { failMessage } from "@/lib/feedback";
 import type { Account, Reconciliation } from "@/lib/types";
 
 function naira(minor: number | null | undefined) {
@@ -15,28 +16,55 @@ export default function AccountsPage() {
   const [recon, setRecon] = useState<Reconciliation | null>(null);
   const [amount, setAmount] = useState("");
   const [target, setTarget] = useState<Account | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
 
   async function load() { setAccounts(await api.accounts()); }
-  useEffect(() => { void load(); }, []);
+  useEffect(() => { void load().catch((err) => setError(failMessage(err))); }, []);
 
   async function saveSnapshot(event: FormEvent) {
     event.preventDefault();
     if (!target) return;
-    await api.snapshot(target.id, {
-      amount: Number(amount),
-      currency: "NGN",
-      asOf: new Date().toISOString().slice(0, 10),
-      provenance: "Confirmed",
-      notes: "Entered in the Accounts screen."
-    });
-    setAmount("");
-    await load();
+    setError(null);
+    setMessage(null);
+    setBusy("snapshot");
+    try {
+      await api.snapshot(target.id, {
+        amount: Number(amount),
+        currency: "NGN",
+        asOf: new Date().toISOString().slice(0, 10),
+        provenance: "Confirmed",
+        notes: "Entered in the Accounts screen."
+      });
+      setAmount("");
+      await load();
+      setMessage(`${target.name} balance saved.`);
+    } catch (err) {
+      setError(failMessage(err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function showReconciliation(id: string) {
+    setError(null);
+    setBusy(id);
+    try {
+      setRecon(await api.reconciliation(id));
+    } catch (err) {
+      setError(failMessage(err));
+    } finally {
+      setBusy(null);
+    }
   }
 
   return (
     <Shell>
       <h1>Which account should hold what?</h1>
       <p className="lede">Each account has one job. Unknown balances stay blank.</p>
+      {message && <p className="sentence">{message}</p>}
+      {error && <p className="error">{error}</p>}
       <div className="stack">
         {accounts.map((account) => (
           <div key={account.id}>
@@ -51,7 +79,7 @@ export default function AccountsPage() {
               <p className="sentence">{account.healthSentence}</p>
               <p className="lede">{account.job} Do not put: {account.doNotPutHere}</p>
               <div className="row">
-                <button className="btn ghost" onClick={() => api.reconciliation(account.id).then(setRecon)}>Show reconciliation</button>
+                <button className="btn ghost" disabled={busy === account.id} onClick={() => void showReconciliation(account.id)}>Show reconciliation</button>
                 <button className="btn ghost" onClick={() => setTarget(account)}>Enter current balance</button>
               </div>
             </Card>
@@ -60,7 +88,7 @@ export default function AccountsPage() {
                 <Card title={`Confirm ${target.name}`}>
                   <form className="stack" onSubmit={saveSnapshot}>
                     <input value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="Current balance" />
-                    <button className="btn" type="submit">Save as confirmed</button>
+                    <button className="btn" type="submit" disabled={busy === "snapshot"}>Save as confirmed</button>
                   </form>
                 </Card>
               </Reveal>
