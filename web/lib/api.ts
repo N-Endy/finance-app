@@ -7,7 +7,7 @@ import type {
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "";
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+async function request<T = never>(path: string, init?: RequestInit): Promise<T> {
   let response: Response;
   try {
     response = await fetch(`${API}${path}`, {
@@ -82,7 +82,7 @@ export const api = {
   updateSettings: (body: object) => request("/api/v1/settings", { method: "PUT", body: JSON.stringify(body) }),
   report: (name: string, from: string, to: string) => request<Report>(`/api/v1/reports/${name}?from=${from}&to=${to}`),
   ask: (message: string) => request<Assistant>("/api/v1/assistant", { method: "POST", body: JSON.stringify({ message }) }),
-  importCsv: (csv: string) => request("/api/v1/imports/csv", { method: "POST", body: JSON.stringify({ csv }) }),
+  importCsv: (csv: string) => request<{ imported: number }>("/api/v1/imports/csv", { method: "POST", body: JSON.stringify({ csv }) }),
   deleteAll: () => request("/api/v1/data", { method: "DELETE" }),
   exportUrl: (format: string) => `${API}/api/v1/exports/${format}`
 };
