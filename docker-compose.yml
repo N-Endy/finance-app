@@ -1,0 +1,43 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: financeos
+      POSTGRES_PASSWORD: financeos
+      POSTGRES_DB: financeos
+    ports:
+      - "5432:5432"
+    volumes:
+      - financeos_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U financeos"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: src/FinanceOS.Api/Dockerfile
+    environment:
+      ASPNETCORE_URLS: http://+:5080
+      FINANCEOS_CONNECTION: Host=postgres;Port=5432;Database=financeos;Username=financeos;Password=financeos
+    ports:
+      - "5080:5080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:5080
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+
+volumes:
+  financeos_pg:

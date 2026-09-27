@@ -1,0 +1,14 @@
+**/.git
+**/.env
+**/.env.local
+**/node_modules
+**/bin
+**/obj
+**/.next
+**/*.db
+**/*.db-shm
+**/*.db-wal
+web/out
+.agents
+.agent
+**/.DS_Store
