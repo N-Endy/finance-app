@@ -12,7 +12,7 @@ using Microsoft.EntityFrameworkCore;
 
 namespace FinanceOS.Infrastructure.Services;
 
-public sealed class FinanceOsService(FinanceDbContext db, IPasswordHasher<Owner> passwords)
+public sealed class FinanceOsService(FinanceDbContext db, IPasswordHasher<Owner> passwords, OpenAiLedgerClient llm)
 {
     private static readonly JsonSerializerOptions JsonOpts = new() { WriteIndented = true };
 
@@ -1174,10 +1174,72 @@ public sealed class FinanceOsService(FinanceDbContext db, IPasswordHasher<Owner>
         var budget = await BudgetAsync(ct);
         var remainingSpend = budget.Where(b => b.Category is not "Betting")
             .Sum(b => Math.Max(0, b.Remaining.Minor ?? 0));
+        var housing = await HousingMoneyAsync(owner, ct);
+        var biz = await BusinessAsync(ct);
+        var violations = await ViolationsAsync(ct);
+        var yearStart = new DateOnly(today.Year, 1, 1);
+        var familyYear = await db.Transactions.Include(t => t.Category)
+            .Where(t => t.OwnerId == owner.Id && !t.IsVoided && t.Date >= yearStart && t.Category!.IsFamily)
+            .SumAsync(t => t.AmountMinor, ct);
+        var open = violations.Where(v => v.IsOpen).ToList();
+        var stanbic = await db.Accounts.SingleAsync(a => a.OwnerId == owner.Id && a.Slug == "stanbic", ct);
+        var stanbicSnap = await LatestSnapshotAsync(stanbic.Id, ct);
+        var stanbicMoney = stanbicSnap is null
+            ? MoneyDto.Unknown("Confirm the current Stanbic balance.")
+            : MoneyDto.Of(stanbicSnap.AmountMinor, stanbicSnap.Currency, stanbicSnap.Provenance, stanbicSnap.AsOf);
+        var facts = new List<LedgerFact>
+        {
+            Fact("Actually spendable", spendable.Amount),
+            Fact("This month income", month.Income),
+            Fact("This month personal expenses", month.Expenses),
+            Fact("This month savings", month.Savings),
+            Fact("This month family support", month.FamilySupport),
+            Fact("This month transfers (not expenses)", month.Transfers),
+            Fact("This month betting recorded", month.Betting),
+            Fact("Remaining spend envelopes", MoneyDto.Of(remainingSpend, Currency.Ngn, Provenance.Confirmed)),
+            Fact("OPay monthly allowance", owner.OpayMonthlyAllowanceMinor is long allowance
+                ? MoneyDto.Of(allowance, Currency.Ngn, Provenance.Confirmed)
+                : MoneyDto.Unknown("OPay monthly allowance")),
+            Fact("Housing", housing.Amount),
+            new("Housing sentence", housing.Sentence, "plan"),
+            Fact("MatchPredictor revenue", biz.Revenue),
+            Fact("MatchPredictor expenses", biz.Expenses),
+            Fact("MatchPredictor net", biz.Net),
+            Fact("Family support this year", MoneyDto.Of(familyYear, Currency.Ngn, Provenance.Confirmed)),
+            new("Open rule violations", open.Count == 0 ? "none" : $"{open.Count}: {open[0].Message}", "confirmed"),
+            Fact("Stanbic current balance", stanbicMoney)
+        };
+
+        if (llm.IsConfigured)
+        {
+            var user = $"Question: {message}\n\nFacts:\n{LedgerFacts.ToJson(facts)}";
+            var text = await llm.CompleteAsync(LedgerFacts.SystemPrompt, user, ct);
+            if (!string.IsNullOrWhiteSpace(text))
+            {
+                return new AssistantResponseDto(message, text, Evidence(facts), false, LedgerFacts.MissingLabels(facts));
+            }
+        }
+
         var lower = message.ToLowerInvariant();
 
         AssistantAnswer answer;
-        if (lower.Contains("afford") || lower.Contains("purchase") || lower.Contains("buy"))
+        if (LooksLikeBettingAdvice(lower))
+        {
+            answer = AssistantEngine.FromFacts(message,
+                "UNKNOWN. Finance OS does not give betting advice. I can restate recorded betting spend from the ledger, not what to wager.",
+                [], "Betting advice");
+        }
+        else if (lower.Contains("stanbic") && (lower.Contains("balance") || lower.Contains("how much")))
+        {
+            answer = stanbicMoney.Minor is null
+                ? AssistantEngine.FromFacts("What is my Stanbic balance?",
+                    "UNKNOWN. Confirm the current Stanbic balance on Accounts before I can restate it.",
+                    [], "Stanbic current balance")
+                : AssistantEngine.FromFacts("What is my Stanbic balance?",
+                    $"The latest recorded Stanbic figure is {stanbicMoney.Formatted} ({stanbicMoney.ProvenanceLabel}).",
+                    []);
+        }
+        else if (lower.Contains("afford") || lower.Contains("purchase") || lower.Contains("buy"))
         {
             var parsed = QuickEntryParser.Parse(message, today, new Dictionary<string, string>());
             var amount = parsed.AmountMinor ?? 10_000_000;
@@ -1196,29 +1258,24 @@ public sealed class FinanceOsService(FinanceDbContext db, IPasswordHasher<Owner>
         }
         else if (lower.Contains("move") && (lower.Contains("month") || lower.Contains("track")))
         {
-            var housing = await HousingMoneyAsync(owner, ct);
             answer = AssistantEngine.FromFacts("Am I on track to move?", housing.Sentence,
                 housing.Explain.Lines.Select(l => new ExplainLine(l.Label, l.Amount.Minor, Currency.Ngn, Provenance.Confirmed, l.Note)).ToList());
         }
         else if (lower.Contains("opay") && (lower.Contains("transfer") || lower.Contains("should")))
         {
-            var allowance = owner.OpayMonthlyAllowanceMinor;
-            answer = allowance is null
+            var opayAllowance = owner.OpayMonthlyAllowanceMinor;
+            answer = opayAllowance is null
                 ? AssistantEngine.FromFacts("How much should I transfer to OPay?",
                     "UNKNOWN. Choose a single monthly OPay allowance in Settings inside the ₦60,000–₦80,000 band. The app will not invent one.",
                     [], "OPay monthly allowance")
                 : AssistantEngine.FromFacts("How much should I transfer to OPay?",
-                    $"The chosen OPay allowance is {Money.FromMajor(allowance.Value / 100m, Currency.Ngn)}. Transfer only enough to reach that ceiling after checking this month's OPay spending.",
+                    $"The chosen OPay allowance is {Money.FromMajor(opayAllowance.Value / 100m, Currency.Ngn)}. Transfer only enough to reach that ceiling after checking this month's OPay spending.",
                     []);
         }
         else if (lower.Contains("family") && (lower.Contains("year") || lower.Contains("given") || lower.Contains("how much")))
         {
-            var yearStart = new DateOnly(today.Year, 1, 1);
-            var family = await db.Transactions.Include(t => t.Category)
-                .Where(t => t.OwnerId == owner.Id && !t.IsVoided && t.Date >= yearStart && t.Category!.IsFamily)
-                .SumAsync(t => t.AmountMinor, ct);
             answer = AssistantEngine.FromFacts("How much have I given my family this year?",
-                $"Recorded family support this year is {Money.FromMajor(family / 100m, Currency.Ngn)}. Recurring commitments stay separate from one-off help.",
+                $"Recorded family support this year is {Money.FromMajor(familyYear / 100m, Currency.Ngn)}. Recurring commitments stay separate from one-off help.",
                 []);
         }
         else if (lower.Contains("software") || lower.Contains("cursor"))
@@ -1229,15 +1286,12 @@ public sealed class FinanceOsService(FinanceDbContext db, IPasswordHasher<Owner>
         }
         else if (lower.Contains("matchpredictor") || lower.Contains("costing"))
         {
-            var biz = await BusinessAsync(ct);
             answer = AssistantEngine.FromFacts("How much has MatchPredictor cost me?",
                 $"MatchPredictor revenue {biz.Revenue.Formatted}, expenses {biz.Expenses.Formatted}, net {biz.Net.Formatted}. Personal betting is not included here.",
                 biz.Lines.Select(l => new ExplainLine(l.Category, l.Amount.Minor, Currency.Ngn, Provenance.Confirmed, null)).ToList());
         }
         else if (lower.Contains("following") || lower.Contains("on track") || lower.Contains("plan"))
         {
-            var violations = await ViolationsAsync(ct);
-            var open = violations.Where(v => v.IsOpen).ToList();
             answer = AssistantEngine.FromFacts("Am I following my financial plan?",
                 open.Count == 0
                     ? "No open rule violations are recorded. Continue recording every transaction and reconciling accounts."
@@ -1651,6 +1705,19 @@ public sealed class FinanceOsService(FinanceDbContext db, IPasswordHasher<Owner>
         result.Add(current.ToString());
         return result.ToArray();
     }
+
+    private static bool LooksLikeBettingAdvice(string lower) =>
+        (lower.Contains("bet") || lower.Contains("wager") || lower.Contains("odds"))
+        && (lower.Contains("should") || lower.Contains("advice") || lower.Contains("tip") || lower.Contains("pick"));
+
+    private static LedgerFact Fact(string label, MoneyDto money) =>
+        new(label, money.Formatted, money.ProvenanceLabel, money.Minor);
+
+    private static List<ExplainLineDto> Evidence(IReadOnlyList<LedgerFact> facts) =>
+        facts
+            .Where(f => f.Minor is not null)
+            .Select(f => new ExplainLineDto(f.Label, MoneyDto.Of(f.Minor!.Value, Currency.Ngn, Provenance.Confirmed), f.Provenance))
+            .ToList();
 
     private static byte[] MinimalXlsx(string sheetName, string csv)
     {

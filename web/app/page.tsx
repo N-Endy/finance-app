@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { Shell, Card, MoneyView, ExplainModal } from "@/components/ui";
+import { AskLedger } from "@/components/ask-ledger";
 import { api } from "@/lib/api";
 import type { Dashboard } from "@/lib/types";
 
@@ -66,6 +67,10 @@ export default function HomePage() {
           <p className="sentence">{data.savingsRateSentence}</p>
           <p className="sentence">Career/business: {data.thisMonth.careerBusiness.formatted}. Betting: {data.thisMonth.betting.formatted}. Transfers: {data.thisMonth.transfers.formatted} — those are not expenses.</p>
         </Card>
+      </div>
+
+      <div style={{ marginTop: 16 }}>
+        <AskLedger />
       </div>
 
       {metric && <ExplainModal metric={metric} onClose={() => setMetric(null)} />}

@@ -13,8 +13,11 @@ using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
-LoadDotEnv(builder.Environment.ContentRootPath);
-LoadDotEnv(Directory.GetCurrentDirectory());
+if (!builder.Environment.IsEnvironment("Testing"))
+{
+    LoadDotEnv(builder.Environment.ContentRootPath);
+    LoadDotEnv(Directory.GetCurrentDirectory());
+}
 var listenPort = Environment.GetEnvironmentVariable("PORT");
 if (!string.IsNullOrWhiteSpace(listenPort))
 {
@@ -40,6 +43,11 @@ builder.Services.AddDbContext<FinanceDbContext>(options =>
     {
         options.UseSqlite(connection);
     }
+});
+builder.Services.AddHttpClient<OpenAiLedgerClient>(client =>
+{
+    client.BaseAddress = new Uri("https://api.openai.com/");
+    client.Timeout = TimeSpan.FromSeconds(20);
 });
 builder.Services.AddScoped<FinanceOsService>();
 builder.Services.AddScoped<DomainExceptionFilter>();
@@ -79,6 +87,12 @@ builder.Services.AddRateLimiter(options =>
     {
         limiter.Window = TimeSpan.FromMinutes(1);
         limiter.PermitLimit = 8;
+        limiter.QueueLimit = 0;
+    });
+    options.AddFixedWindowLimiter("assistant", limiter =>
+    {
+        limiter.Window = TimeSpan.FromMinutes(1);
+        limiter.PermitLimit = 20;
         limiter.QueueLimit = 0;
     });
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;

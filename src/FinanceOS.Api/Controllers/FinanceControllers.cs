@@ -302,6 +302,7 @@ public sealed class FinanceController(FinanceOsService finance) : ControllerBase
     }
 
     [HttpPost("assistant")]
+    [EnableRateLimiting("assistant")]
     public Task<AssistantResponseDto> Ask([FromBody] AssistantRequest request, CancellationToken ct) =>
         finance.AskAsync(request.Message, ct);
 

@@ -2,6 +2,7 @@
 
 import { FormEvent, useEffect, useState } from "react";
 import { Shell, Card, Reveal } from "@/components/ui";
+import { AskLedger } from "@/components/ask-ledger";
 import { api } from "@/lib/api";
 import { failMessage } from "@/lib/feedback";
 import type { Account, Preview, Transaction } from "@/lib/types";
@@ -14,8 +15,6 @@ export default function TransactionsPage() {
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
-  const [assistant, setAssistant] = useState("");
-  const [answer, setAnswer] = useState<string | null>(null);
   const [showDetail, setShowDetail] = useState(false);
   const [detail, setDetail] = useState({ date: new Date().toISOString().slice(0, 10), type: "Expense", accountId: "", counterpartyAccountId: "", amount: "", description: "" });
 
@@ -82,20 +81,6 @@ export default function TransactionsPage() {
     }
   }
 
-  async function ask(event: FormEvent) {
-    event.preventDefault();
-    setError(null);
-    setBusy("ask");
-    try {
-      const result = await api.ask(assistant);
-      setAnswer(result.answer + (result.missingFacts.length ? ` Missing: ${result.missingFacts.join("; ")}` : ""));
-    } catch (err) {
-      setError(failMessage(err));
-    } finally {
-      setBusy(null);
-    }
-  }
-
   async function voidRow(id: string) {
     setError(null);
     setMessage(null);
@@ -114,7 +99,7 @@ export default function TransactionsPage() {
   return (
     <Shell>
       <h1>Where did my money go?</h1>
-      <p className="lede">Record a transaction, then confirm before it is saved.</p>
+      <p className="lede">Record a transaction, then confirm before it is saved. Ask the ledger using recorded facts only.</p>
       {message && <p className="sentence">{message}</p>}
       {error && <p className="error">{error}</p>}
 
@@ -152,13 +137,7 @@ export default function TransactionsPage() {
         </Reveal>
       )}
 
-      <Card title="Ask the ledger">
-        <form className="stack" onSubmit={ask}>
-          <input value={assistant} onChange={(e) => setAssistant(e.target.value)} placeholder="How much has MatchPredictor cost me?" />
-          <button className="btn ghost" type="submit" disabled={busy === "ask"}>Ask</button>
-        </form>
-        {answer && <Reveal watch={answer}><p className="sentence">{answer}</p></Reveal>}
-      </Card>
+      <AskLedger />
 
       {preview && (
         <Reveal watch={preview.summary}>
