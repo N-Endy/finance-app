@@ -54,6 +54,7 @@ builder.Services.AddHttpClient<FxRateClient>(client =>
     client.BaseAddress = new Uri("https://open.er-api.com/");
     client.Timeout = TimeSpan.FromSeconds(10);
 });
+builder.Services.AddScoped<IBankStatementParserService, BankStatementParserService>();
 builder.Services.AddScoped<FinanceOsService>();
 builder.Services.AddScoped<DomainExceptionFilter>();
 builder.Services.AddSingleton<IPasswordHasher<Owner>, PasswordHasher<Owner>>();

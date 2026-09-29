@@ -20,7 +20,14 @@ internal static class MoneyMapping
     public static ExplainLineDto Line(ExplainLine line) => new(line.Label, FromLine(line), line.Note);
 
     public static Currency ParseCurrency(string? value) =>
-        string.Equals(value, "USD", StringComparison.OrdinalIgnoreCase) ? Currency.Usd : Currency.Ngn;
+        value?.ToUpperInvariant() switch
+        {
+            "USD" => Currency.Usd,
+            "GBP" => Currency.Gbp,
+            "EUR" => Currency.Eur,
+            "USDT" => Currency.Usdt,
+            _ => Currency.Ngn
+        };
 
     public static TransactionType ParseType(string value) =>
         Enum.Parse<TransactionType>(value, true);

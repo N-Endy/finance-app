@@ -101,6 +101,11 @@ public sealed class Holding
     public string StatusNote { get; set; } = string.Empty;
     public bool IncludeInNetWorth { get; set; } = true;
     public bool IsExpectedReceivable { get; set; }
+    public decimal? UnitsHeld { get; set; }
+    public decimal? CostBasisMajor { get; set; }
+    public decimal? CurrentUnitPrice { get; set; }
+    public string? AssetClass { get; set; }
+    public string? Symbol { get; set; }
 }
 
 public sealed class ExchangeRate
@@ -150,8 +155,45 @@ public sealed class Business
     public Guid OwnerId { get; set; }
     public string Slug { get; set; } = string.Empty;
     public string Name { get; set; } = string.Empty;
+    public string? Description { get; set; }
     public int ReinvestPercent { get; set; } = 70;
     public int PersonalPercent { get; set; } = 30;
+    public bool IsActive { get; set; } = true;
+}
+
+public sealed class Liability
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid OwnerId { get; set; }
+    public string Slug { get; set; } = string.Empty;
+    public string Name { get; set; } = string.Empty;
+    public string Lender { get; set; } = string.Empty;
+    public long PrincipalMinor { get; set; }
+    public long BalanceMinor { get; set; }
+    public Currency Currency { get; set; } = Currency.Ngn;
+    public decimal InterestRatePercent { get; set; }
+    public long MonthlyPaymentMinor { get; set; }
+    public DateOnly? DueDate { get; set; }
+    public Provenance Provenance { get; set; } = Provenance.Confirmed;
+    public string? Notes { get; set; }
+    public bool IsActive { get; set; } = true;
+    public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
+}
+
+public sealed class CounterpartyLoan
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid OwnerId { get; set; }
+    public string BorrowerName { get; set; } = string.Empty;
+    public long AmountMinor { get; set; }
+    public long BalanceRemainingMinor { get; set; }
+    public Currency Currency { get; set; } = Currency.Ngn;
+    public DateOnly LentDate { get; set; }
+    public DateOnly? ExpectedRepaymentDate { get; set; }
+    public string Status { get; set; } = "Active";
+    public string? Notes { get; set; }
+    public bool IsActive { get; set; } = true;
+    public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
 }
 
 public sealed class FinancialRule
@@ -227,3 +269,21 @@ public sealed class ActualCharge
     public Currency Currency { get; set; } = Currency.Ngn;
     public DateOnly AsOf { get; set; }
 }
+
+public sealed class FixedAsset
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid OwnerId { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public string Category { get; set; } = string.Empty; // Gadget, Equipment, Vehicle, Property
+    public long PurchasePriceMinor { get; set; }
+    public long CurrentValuationMinor { get; set; }
+    public Currency Currency { get; set; } = Currency.Ngn;
+    public DateOnly PurchaseDate { get; set; }
+    public int UsefulLifeMonths { get; set; } = 36;
+    public long SalvageValueMinor { get; set; } = 0;
+    public string? Notes { get; set; }
+    public bool IncludeInNetWorth { get; set; } = true;
+    public bool IsActive { get; set; } = true;
+}
+

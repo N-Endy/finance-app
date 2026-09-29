@@ -12,7 +12,12 @@ using Microsoft.EntityFrameworkCore;
 
 namespace FinanceOS.Infrastructure.Services;
 
-public sealed class FinanceOsService(FinanceDbContext db, IPasswordHasher<Owner> passwords, OpenAiLedgerClient llm, FxRateClient fxRates)
+public sealed class FinanceOsService(
+    FinanceDbContext db,
+    IPasswordHasher<Owner> passwords,
+    OpenAiLedgerClient llm,
+    FxRateClient fxRates,
+    IBankStatementParserService statementParser)
 {
     private static readonly JsonSerializerOptions JsonOpts = new() { WriteIndented = true };
 
@@ -484,7 +489,7 @@ public sealed class FinanceOsService(FinanceDbContext db, IPasswordHasher<Owner>
                     ? $"Current progress is UNKNOWN. {current.Needed}"
                     : remaining <= 0
                         ? $"{goal.Name} has reached its recorded target on confirmed or last-known figures as labelled."
-                        : $"You're {Money.FromMajor(remaining.Value / 100m, Currency.Ngn)} away from the {goal.Name} target.";
+                        : $"You're {Money.FromMajor((remaining ?? 0) / 100m, Currency.Ngn)} away from the {goal.Name} target.";
             var math = SinkingFundMath.RequiredMonthly(goal.TargetMinor, current.Minor, goal.Deadline, MoneyMapping.Today(), goal.MonthlyContributionMinor);
             list.Add(new GoalDto(goal.Id, goal.Slug, goal.Name, goal.Kind.ToString(),
                 MoneyDto.Of(goal.TargetMinor, goal.Currency, Provenance.Plan),
@@ -626,12 +631,59 @@ public sealed class FinanceOsService(FinanceDbContext db, IPasswordHasher<Owner>
     {
         var owner = await RequireOwner(ct);
         var rows = await db.Holdings.Where(h => h.OwnerId == owner.Id).OrderBy(h => h.Name).ToListAsync(ct);
-        return rows.Select(h => new HoldingDto(
-            h.Id, h.Name,
-            h.Provenance == Provenance.Unknown
-                ? MoneyDto.Unknown(h.StatusNote, h.Currency)
-                : MoneyDto.Of(h.AmountMinor, h.Currency, h.Provenance, h.AsOf),
-            h.Liquidity, h.Purpose, h.StatusNote, h.IsExpectedReceivable)).ToList();
+        return rows.Select(h =>
+        {
+            decimal? pnl = null;
+            if (h.UnitsHeld.HasValue && h.CurrentUnitPrice.HasValue && h.CostBasisMajor.HasValue)
+            {
+                pnl = (h.UnitsHeld.Value * h.CurrentUnitPrice.Value) - (h.UnitsHeld.Value * h.CostBasisMajor.Value);
+            }
+            return new HoldingDto(
+                h.Id, h.Name,
+                h.Provenance == Provenance.Unknown
+                    ? MoneyDto.Unknown(h.StatusNote, h.Currency)
+                    : MoneyDto.Of(h.AmountMinor, h.Currency, h.Provenance, h.AsOf),
+                h.Liquidity, h.Purpose, h.StatusNote, h.IsExpectedReceivable,
+                h.UnitsHeld, h.CostBasisMajor, h.CurrentUnitPrice, h.Symbol, h.AssetClass, pnl);
+        }).ToList();
+    }
+
+    public async Task<HoldingDto> UpdateHoldingValuationAsync(string slug, HoldingValuationUpdateRequest request, CancellationToken ct)
+    {
+        var owner = await RequireOwner(ct);
+        var holding = await db.Holdings.FirstOrDefaultAsync(h => h.OwnerId == owner.Id && h.Slug == slug, ct)
+                      ?? throw new DomainException($"Holding '{slug}' was not found.");
+
+        holding.UnitsHeld = request.UnitsHeld;
+        holding.CostBasisMajor = request.CostBasisMajor;
+        holding.CurrentUnitPrice = request.CurrentUnitPrice;
+        if (!string.IsNullOrWhiteSpace(request.Symbol)) holding.Symbol = request.Symbol.Trim();
+        if (!string.IsNullOrWhiteSpace(request.AssetClass)) holding.AssetClass = request.AssetClass.Trim();
+        holding.AsOf = request.AsOf;
+
+        if (request.UnitsHeld.HasValue && request.CurrentUnitPrice.HasValue)
+        {
+            var calculatedValue = request.UnitsHeld.Value * request.CurrentUnitPrice.Value;
+            holding.AmountMinor = Money.FromMajor(calculatedValue, holding.Currency).MinorUnits;
+            holding.Provenance = Provenance.Confirmed;
+        }
+
+        await db.SaveChangesAsync(ct);
+        await AuditAsync(owner.Id, "update", "Holding", holding.Id, $"Updated unit valuation for {holding.Name}.", ct);
+
+        decimal? pnl = null;
+        if (holding.UnitsHeld.HasValue && holding.CurrentUnitPrice.HasValue && holding.CostBasisMajor.HasValue)
+        {
+            pnl = (holding.UnitsHeld.Value * holding.CurrentUnitPrice.Value) - (holding.UnitsHeld.Value * holding.CostBasisMajor.Value);
+        }
+
+        return new HoldingDto(
+            holding.Id, holding.Name,
+            holding.Provenance == Provenance.Unknown
+                ? MoneyDto.Unknown(holding.StatusNote, holding.Currency)
+                : MoneyDto.Of(holding.AmountMinor, holding.Currency, holding.Provenance, holding.AsOf),
+            holding.Liquidity, holding.Purpose, holding.StatusNote, holding.IsExpectedReceivable,
+            holding.UnitsHeld, holding.CostBasisMajor, holding.CurrentUnitPrice, holding.Symbol, holding.AssetClass, pnl);
     }
 
     public async Task UpdateHoldingAsync(Guid id, decimal amount, string provenance, DateOnly asOf, CancellationToken ct)
@@ -794,12 +846,62 @@ public sealed class FinanceOsService(FinanceDbContext db, IPasswordHasher<Owner>
         await db.SaveChangesAsync(ct);
     }
 
-    public async Task<BusinessDto> BusinessAsync(CancellationToken ct)
+    public async Task<IReadOnlyList<BusinessDto>> BusinessesAsync(CancellationToken ct)
     {
         var owner = await RequireOwner(ct);
-        var business = await db.Businesses.SingleAsync(b => b.OwnerId == owner.Id && b.Slug == "matchpredictor", ct);
+        var businesses = await db.Businesses.Where(b => b.OwnerId == owner.Id && b.IsActive).OrderBy(b => b.Name).ToListAsync(ct);
+        var list = new List<BusinessDto>();
+        foreach (var b in businesses)
+        {
+            list.Add(await CalculateBusinessDtoAsync(owner, b, ct));
+        }
+        return list;
+    }
+
+    public async Task<BusinessDto> BusinessBySlugAsync(string slug, CancellationToken ct)
+    {
+        var owner = await RequireOwner(ct);
+        var business = await db.Businesses.FirstOrDefaultAsync(b => b.OwnerId == owner.Id && b.Slug == slug, ct)
+                       ?? throw new DomainException($"Business '{slug}' was not found.");
+        return await CalculateBusinessDtoAsync(owner, business, ct);
+    }
+
+    public Task<BusinessDto> BusinessAsync(CancellationToken ct) => BusinessBySlugAsync("matchpredictor", ct);
+
+    public async Task<BusinessDto> CreateBusinessAsync(BusinessWriteRequest request, CancellationToken ct)
+    {
+        var owner = await RequireOwner(ct);
+        var slug = string.IsNullOrWhiteSpace(request.Slug)
+            ? request.Name.Trim().ToLowerInvariant().Replace(" ", "-")
+            : request.Slug.Trim().ToLowerInvariant();
+
+        if (await db.Businesses.AnyAsync(b => b.OwnerId == owner.Id && b.Slug == slug, ct))
+        {
+            throw new DomainException($"A business with identifier '{slug}' already exists.");
+        }
+
+        var business = new Business
+        {
+            OwnerId = owner.Id,
+            Slug = slug,
+            Name = request.Name.Trim(),
+            Description = request.Description?.Trim(),
+            ReinvestPercent = request.ReinvestPercent > 0 ? request.ReinvestPercent : 70,
+            PersonalPercent = request.PersonalPercent > 0 ? request.PersonalPercent : 30,
+            IsActive = true
+        };
+
+        db.Businesses.Add(business);
+        await AuditAsync(owner.Id, "create", "Business", business.Id, $"Created business {business.Name}.", ct);
+        await db.SaveChangesAsync(ct);
+        return await CalculateBusinessDtoAsync(owner, business, ct);
+    }
+
+    private async Task<BusinessDto> CalculateBusinessDtoAsync(Owner owner, Business business, CancellationToken ct)
+    {
         var txs = await db.Transactions.Include(t => t.Category)
-            .Where(t => t.OwnerId == owner.Id && !t.IsVoided && t.IsBusiness)
+            .Where(t => t.OwnerId == owner.Id && !t.IsVoided &&
+                        (t.BusinessId == business.Id || (business.Slug == "matchpredictor" && t.BusinessId == null && t.IsBusiness)))
             .ToListAsync(ct);
         var revenue = txs.Where(t => t.Type == TransactionType.BusinessRevenue).Sum(t => t.AmountMinor);
         var expenses = txs.Where(t => t.Type is TransactionType.BusinessExpense or TransactionType.Expense).Sum(t => t.AmountMinor);
@@ -807,7 +909,8 @@ public sealed class FinanceOsService(FinanceDbContext db, IPasswordHasher<Owner>
             .GroupBy(t => t.Category?.Name ?? "Other")
             .Select(g => new BusinessLineDto(g.Key, MoneyDto.Of(g.Sum(x => x.AmountMinor), Currency.Ngn, Provenance.Confirmed)))
             .ToList();
-        if (groups.Count == 0)
+
+        if (groups.Count == 0 && business.Slug == "matchpredictor")
         {
             groups.Add(new BusinessLineDto("Hosting", MoneyDto.Unknown("Enter the actual Railway naira charge.")));
             groups.Add(new BusinessLineDto("Domain", MoneyDto.Unknown("Enter the actual domain naira charge.")));
@@ -816,23 +919,347 @@ public sealed class FinanceOsService(FinanceDbContext db, IPasswordHasher<Owner>
             groups.Add(new BusinessLineDto("Revenue", MoneyDto.Of(0, Currency.Ngn, Provenance.Confirmed, null)));
         }
 
-        return new BusinessDto(business.Name,
+        return new BusinessDto(
+            business.Id,
+            business.Slug,
+            business.Name,
+            business.Description,
             MoneyDto.Of(revenue, Currency.Ngn, Provenance.Confirmed),
-            expenses == 0 ? MoneyDto.Unknown("No confirmed MatchPredictor expenses have been entered yet. Plan estimates are listed separately.") : MoneyDto.Of(expenses, Currency.Ngn, Provenance.Confirmed),
+            expenses == 0 ? MoneyDto.Unknown($"No confirmed {business.Name} expenses have been entered yet.") : MoneyDto.Of(expenses, Currency.Ngn, Provenance.Confirmed),
             expenses == 0 && revenue == 0 ? MoneyDto.Unknown("Net result is UNKNOWN until actual costs and revenue are entered.") : MoneyDto.Of(revenue - expenses, Currency.Ngn, Provenance.Confirmed),
-            business.ReinvestPercent, business.PersonalPercent, groups);
+            business.ReinvestPercent,
+            business.PersonalPercent,
+            business.IsActive,
+            groups);
     }
 
-    public async Task UpdateBusinessSplitAsync(int reinvest, int personal, CancellationToken ct)
+    public async Task UpdateBusinessSplitAsync(string slug, int reinvest, int personal, CancellationToken ct)
     {
         if (reinvest + personal != 100) throw new DomainException("Reinvestment and personal percentages must add to 100.");
         var owner = await RequireOwner(ct);
-        var business = await db.Businesses.SingleAsync(b => b.OwnerId == owner.Id && b.Slug == "matchpredictor", ct);
+        var business = await db.Businesses.SingleAsync(b => b.OwnerId == owner.Id && b.Slug == slug, ct);
         business.ReinvestPercent = reinvest;
         business.PersonalPercent = personal;
-        owner.BusinessReinvestPercent = reinvest;
-        owner.BusinessPersonalPercent = personal;
+        if (slug == "matchpredictor")
+        {
+            owner.BusinessReinvestPercent = reinvest;
+            owner.BusinessPersonalPercent = personal;
+        }
         await db.SaveChangesAsync(ct);
+    }
+
+    public Task UpdateBusinessSplitAsync(int reinvest, int personal, CancellationToken ct) =>
+        UpdateBusinessSplitAsync("matchpredictor", reinvest, personal, ct);
+
+    public async Task<IReadOnlyList<LiabilityDto>> LiabilitiesAsync(CancellationToken ct)
+    {
+        var owner = await RequireOwner(ct);
+        var rows = await db.Liabilities.Where(l => l.OwnerId == owner.Id && l.IsActive).OrderBy(l => l.Name).ToListAsync(ct);
+        return rows.Select(l => new LiabilityDto(
+            l.Id, l.Slug, l.Name, l.Lender,
+            MoneyDto.Of(l.PrincipalMinor, l.Currency, l.Provenance),
+            MoneyDto.Of(l.BalanceMinor, l.Currency, l.Provenance),
+            l.InterestRatePercent,
+            MoneyDto.Of(l.MonthlyPaymentMinor, l.Currency, l.Provenance),
+            l.DueDate,
+            l.Provenance.ToString().ToLowerInvariant(),
+            l.Notes,
+            l.IsActive)).ToList();
+    }
+
+    public async Task<LiabilityDto> CreateLiabilityAsync(LiabilityWriteRequest request, CancellationToken ct)
+    {
+        var owner = await RequireOwner(ct);
+        var currency = MoneyMapping.ParseCurrency(request.Currency);
+        var slug = string.IsNullOrWhiteSpace(request.Slug)
+            ? request.Name.Trim().ToLowerInvariant().Replace(" ", "-")
+            : request.Slug.Trim().ToLowerInvariant();
+
+        var liability = new Liability
+        {
+            OwnerId = owner.Id,
+            Slug = slug,
+            Name = request.Name.Trim(),
+            Lender = request.Lender.Trim(),
+            PrincipalMinor = Money.FromMajor(request.Principal, currency).MinorUnits,
+            BalanceMinor = Money.FromMajor(request.Balance, currency).MinorUnits,
+            Currency = currency,
+            InterestRatePercent = request.InterestRatePercent,
+            MonthlyPaymentMinor = Money.FromMajor(request.MonthlyPayment, currency).MinorUnits,
+            DueDate = request.DueDate,
+            Notes = request.Notes,
+            Provenance = Provenance.Confirmed,
+            IsActive = true
+        };
+
+        db.Liabilities.Add(liability);
+        await AuditAsync(owner.Id, "create", "Liability", liability.Id, $"Recorded liability {liability.Name}.", ct);
+        await db.SaveChangesAsync(ct);
+
+        return new LiabilityDto(
+            liability.Id, liability.Slug, liability.Name, liability.Lender,
+            MoneyDto.Of(liability.PrincipalMinor, liability.Currency, liability.Provenance),
+            MoneyDto.Of(liability.BalanceMinor, liability.Currency, liability.Provenance),
+            liability.InterestRatePercent,
+            MoneyDto.Of(liability.MonthlyPaymentMinor, liability.Currency, liability.Provenance),
+            liability.DueDate,
+            liability.Provenance.ToString().ToLowerInvariant(),
+            liability.Notes,
+            liability.IsActive);
+    }
+
+    public async Task UpdateLiabilityAsync(Guid id, decimal balance, CancellationToken ct)
+    {
+        var owner = await RequireOwner(ct);
+        var liability = await db.Liabilities.SingleAsync(l => l.Id == id && l.OwnerId == owner.Id, ct);
+        liability.BalanceMinor = Money.FromMajor(balance, liability.Currency).MinorUnits;
+        if (liability.BalanceMinor <= 0)
+        {
+            liability.IsActive = false;
+        }
+        await db.SaveChangesAsync(ct);
+    }
+
+    public async Task<IReadOnlyList<CounterpartyLoanDto>> CounterpartyLoansAsync(CancellationToken ct)
+    {
+        var owner = await RequireOwner(ct);
+        var rows = await db.CounterpartyLoans.Where(l => l.OwnerId == owner.Id && l.IsActive).OrderByDescending(l => l.LentDate).ToListAsync(ct);
+        return rows.Select(l => new CounterpartyLoanDto(
+            l.Id, l.BorrowerName,
+            MoneyDto.Of(l.AmountMinor, l.Currency, Provenance.Confirmed),
+            MoneyDto.Of(l.BalanceRemainingMinor, l.Currency, Provenance.Confirmed),
+            l.LentDate, l.ExpectedRepaymentDate, l.Status, l.Notes, l.IsActive)).ToList();
+    }
+
+    public async Task<CounterpartyLoanDto> CreateCounterpartyLoanAsync(CounterpartyLoanWriteRequest request, CancellationToken ct)
+    {
+        var owner = await RequireOwner(ct);
+        var currency = MoneyMapping.ParseCurrency(request.Currency);
+        var loan = new CounterpartyLoan
+        {
+            OwnerId = owner.Id,
+            BorrowerName = request.BorrowerName.Trim(),
+            AmountMinor = Money.FromMajor(request.Amount, currency).MinorUnits,
+            BalanceRemainingMinor = Money.FromMajor(request.BalanceRemaining, currency).MinorUnits,
+            Currency = currency,
+            LentDate = request.LentDate,
+            ExpectedRepaymentDate = request.ExpectedRepaymentDate,
+            Notes = request.Notes,
+            Status = "Active",
+            IsActive = true
+        };
+
+        db.CounterpartyLoans.Add(loan);
+        await AuditAsync(owner.Id, "create", "CounterpartyLoan", loan.Id, $"Recorded loan to {loan.BorrowerName}.", ct);
+        await db.SaveChangesAsync(ct);
+
+        return new CounterpartyLoanDto(
+            loan.Id, loan.BorrowerName,
+            MoneyDto.Of(loan.AmountMinor, loan.Currency, Provenance.Confirmed),
+            MoneyDto.Of(loan.BalanceRemainingMinor, loan.Currency, Provenance.Confirmed),
+            loan.LentDate, loan.ExpectedRepaymentDate, loan.Status, loan.Notes, loan.IsActive);
+    }
+
+    public async Task UpdateCounterpartyLoanAsync(Guid id, decimal balanceRemaining, string status, CancellationToken ct)
+    {
+        var owner = await RequireOwner(ct);
+        var loan = await db.CounterpartyLoans.SingleAsync(l => l.Id == id && l.OwnerId == owner.Id, ct);
+        loan.BalanceRemainingMinor = Money.FromMajor(balanceRemaining, loan.Currency).MinorUnits;
+        loan.Status = status;
+        if (loan.BalanceRemainingMinor <= 0 || status.Equals("Repaid", StringComparison.OrdinalIgnoreCase))
+        {
+            loan.IsActive = false;
+        }
+        await db.SaveChangesAsync(ct);
+    }
+
+    public async Task<IReadOnlyList<FixedAssetDto>> FixedAssetsAsync(CancellationToken ct)
+    {
+        var owner = await RequireOwner(ct);
+        var rows = await db.FixedAssets.Where(f => f.OwnerId == owner.Id && f.IsActive).OrderBy(f => f.Name).ToListAsync(ct);
+        return rows.Select(f => new FixedAssetDto(
+            f.Id, f.Name, f.Category,
+            MoneyDto.Of(f.PurchasePriceMinor, f.Currency, Provenance.Confirmed),
+            MoneyDto.Of(f.CurrentValuationMinor, f.Currency, Provenance.Confirmed),
+            f.PurchaseDate, f.UsefulLifeMonths,
+            MoneyDto.Of(f.SalvageValueMinor, f.Currency, Provenance.Confirmed),
+            f.Notes, f.IncludeInNetWorth, f.IsActive)).ToList();
+    }
+
+    public async Task<FixedAssetDto> CreateFixedAssetAsync(FixedAssetWriteRequest request, CancellationToken ct)
+    {
+        var owner = await RequireOwner(ct);
+        var currency = MoneyMapping.ParseCurrency(request.Currency);
+        var asset = new FixedAsset
+        {
+            OwnerId = owner.Id,
+            Name = request.Name.Trim(),
+            Category = request.Category.Trim(),
+            PurchasePriceMinor = Money.FromMajor(request.PurchasePrice, currency).MinorUnits,
+            CurrentValuationMinor = Money.FromMajor(request.CurrentValuation, currency).MinorUnits,
+            Currency = currency,
+            PurchaseDate = request.PurchaseDate,
+            UsefulLifeMonths = request.UsefulLifeMonths > 0 ? request.UsefulLifeMonths : 36,
+            SalvageValueMinor = Money.FromMajor(request.SalvageValue, currency).MinorUnits,
+            Notes = request.Notes,
+            IncludeInNetWorth = request.IncludeInNetWorth,
+            IsActive = true
+        };
+
+        db.FixedAssets.Add(asset);
+        await AuditAsync(owner.Id, "create", "FixedAsset", asset.Id, $"Added fixed asset {asset.Name}.", ct);
+        await db.SaveChangesAsync(ct);
+
+        return new FixedAssetDto(
+            asset.Id, asset.Name, asset.Category,
+            MoneyDto.Of(asset.PurchasePriceMinor, asset.Currency, Provenance.Confirmed),
+            MoneyDto.Of(asset.CurrentValuationMinor, asset.Currency, Provenance.Confirmed),
+            asset.PurchaseDate, asset.UsefulLifeMonths,
+            MoneyDto.Of(asset.SalvageValueMinor, asset.Currency, Provenance.Confirmed),
+            asset.Notes, asset.IncludeInNetWorth, asset.IsActive);
+    }
+
+    public async Task UpdateFixedAssetAsync(Guid id, FixedAssetWriteRequest request, CancellationToken ct)
+    {
+        var owner = await RequireOwner(ct);
+        var asset = await db.FixedAssets.SingleAsync(f => f.Id == id && f.OwnerId == owner.Id, ct);
+        var currency = MoneyMapping.ParseCurrency(request.Currency);
+        asset.Name = request.Name.Trim();
+        asset.Category = request.Category.Trim();
+        asset.PurchasePriceMinor = Money.FromMajor(request.PurchasePrice, currency).MinorUnits;
+        asset.CurrentValuationMinor = Money.FromMajor(request.CurrentValuation, currency).MinorUnits;
+        asset.Currency = currency;
+        asset.PurchaseDate = request.PurchaseDate;
+        asset.UsefulLifeMonths = request.UsefulLifeMonths > 0 ? request.UsefulLifeMonths : 36;
+        asset.SalvageValueMinor = Money.FromMajor(request.SalvageValue, currency).MinorUnits;
+        asset.Notes = request.Notes;
+        asset.IncludeInNetWorth = request.IncludeInNetWorth;
+        await db.SaveChangesAsync(ct);
+    }
+
+    public async Task<SpendingVelocityDto> GetSpendingVelocityAsync(CancellationToken ct)
+    {
+        var owner = await RequireOwner(ct);
+        var today = MoneyMapping.Today();
+        var (start, end) = MoneyMapping.MonthBounds(today);
+        var month = await MonthTotalsAsync(owner.Id, start, end, ct);
+        var spendable = await BuildSpendableAsync(owner, ct);
+
+        var daysInMonth = DateTime.DaysInMonth(today.Year, today.Month);
+        var daysElapsed = Math.Max(1, today.Day);
+        var daysRemaining = Math.Max(1, daysInMonth - today.Day + 1);
+
+        var spendableMinor = Math.Max(0, spendable.Amount.Minor ?? 0);
+        var monthToDateExpensesMinor = Math.Max(0, month.Expenses.Minor ?? 0);
+
+        var actualDailySpendMinor = monthToDateExpensesMinor / daysElapsed;
+        var allowedBurnPerDayMinor = daysRemaining > 0 ? (spendableMinor / daysRemaining) : 0;
+
+        var pacingRatio = allowedBurnPerDayMinor > 0
+            ? Math.Round((decimal)actualDailySpendMinor / allowedBurnPerDayMinor, 2)
+            : 1.0m;
+
+        string status;
+        string sentence;
+        if (spendableMinor <= 0)
+        {
+            status = "Exhausted";
+            sentence = "Daily spendable pool is exhausted for the remainder of this month.";
+        }
+        else if (pacingRatio <= 0.85m)
+        {
+            status = "UnderBudget";
+            sentence = $"Spending is well paced at {Money.FromMajor(actualDailySpendMinor / 100m, Currency.Ngn)}/day vs {Money.FromMajor(allowedBurnPerDayMinor / 100m, Currency.Ngn)}/day allowed.";
+        }
+        else if (pacingRatio <= 1.05m)
+        {
+            status = "OnTrack";
+            sentence = $"Pacing on target: burning {Money.FromMajor(actualDailySpendMinor / 100m, Currency.Ngn)}/day with {daysRemaining} days remaining.";
+        }
+        else
+        {
+            status = "BurningFast";
+            sentence = $"Burning faster than target ({Money.FromMajor(actualDailySpendMinor / 100m, Currency.Ngn)}/day vs {Money.FromMajor(allowedBurnPerDayMinor / 100m, Currency.Ngn)}/day allowed). Slow down to avoid running out.";
+        }
+
+        var projectedMonthEndMinor = actualDailySpendMinor * daysInMonth;
+
+        return new SpendingVelocityDto(
+            MoneyDto.Of(allowedBurnPerDayMinor, Currency.Ngn, Provenance.Confirmed),
+            MoneyDto.Of(actualDailySpendMinor, Currency.Ngn, Provenance.Confirmed),
+            pacingRatio,
+            status,
+            daysRemaining,
+            daysElapsed,
+            MoneyDto.Of(projectedMonthEndMinor, Currency.Ngn, Provenance.Confirmed),
+            MoneyDto.Of(monthToDateExpensesMinor, Currency.Ngn, Provenance.Confirmed),
+            MoneyDto.Of(spendableMinor, Currency.Ngn, Provenance.Confirmed),
+            sentence);
+    }
+
+    public async Task<StatementParseResultDto> ParseStatementAsync(StatementParseRequest request, CancellationToken ct)
+    {
+        var owner = await RequireOwner(ct);
+        return await statementParser.ParseStatementAsync(owner.Id, request, ct);
+    }
+
+    public async Task<int> CommitStatementAsync(StatementCommitRequest request, CancellationToken ct)
+    {
+        var owner = await RequireOwner(ct);
+        var count = 0;
+        foreach (var tx in request.Transactions)
+        {
+            await CreateTransactionAsync(tx, ct);
+            count++;
+        }
+        await AuditAsync(owner.Id, "commit", "Statement", owner.Id, $"Committed {count} statement transactions.", ct);
+        return count;
+    }
+
+    public async Task RebalanceEnvelopesAsync(EnvelopeRebalanceRequest request, CancellationToken ct)
+    {
+        var owner = await RequireOwner(ct);
+        var fromEnv = await db.Envelopes.SingleOrDefaultAsync(e => e.Id == request.FromEnvelopeId && e.OwnerId == owner.Id, ct)
+                      ?? throw new DomainException("Source envelope not found.");
+        var toEnv = await db.Envelopes.SingleOrDefaultAsync(e => e.Id == request.ToEnvelopeId && e.OwnerId == owner.Id, ct)
+                    ?? throw new DomainException("Target envelope not found.");
+
+        var transferAmountMinor = Money.NgnFromMajor(request.Amount).MinorUnits;
+        if (transferAmountMinor <= 0)
+        {
+            throw new DomainException("Rebalance amount must be positive.");
+        }
+
+        var fromAssignments = await db.Assignments.Where(a => a.EnvelopeId == fromEnv.Id).ToListAsync(ct);
+        var totalFromMinor = fromAssignments.Sum(a => a.AmountMinor);
+        if (totalFromMinor < transferAmountMinor)
+        {
+            throw new DomainException($"Cannot transfer {Money.FromMajor(request.Amount, Currency.Ngn)} from {fromEnv.Name}; envelope only holds {Money.FromMajor(totalFromMinor / 100m, Currency.Ngn)}.");
+        }
+
+        var targetAccount = fromAssignments.First().AccountId;
+        db.Assignments.Add(new EnvelopeAssignment
+        {
+            AccountId = targetAccount,
+            EnvelopeId = fromEnv.Id,
+            AmountMinor = -transferAmountMinor,
+            Currency = Currency.Ngn,
+            AsOf = MoneyMapping.Today(),
+            Notes = $"Rebalance to {toEnv.Name}: {request.Notes}"
+        });
+
+        db.Assignments.Add(new EnvelopeAssignment
+        {
+            AccountId = targetAccount,
+            EnvelopeId = toEnv.Id,
+            AmountMinor = transferAmountMinor,
+            Currency = Currency.Ngn,
+            AsOf = MoneyMapping.Today(),
+            Notes = $"Rebalance from {fromEnv.Name}: {request.Notes}"
+        });
+
+        await db.SaveChangesAsync(ct);
+        await AuditAsync(owner.Id, "rebalance", "Envelope", toEnv.Id, $"Rebalanced {Money.FromMajor(request.Amount, Currency.Ngn)} from {fromEnv.Name} to {toEnv.Name}.", ct);
     }
 
     public async Task<IReadOnlyList<ActionDto>> ActionsAsync(CancellationToken ct)
@@ -1533,6 +1960,18 @@ public sealed class FinanceOsService(FinanceDbContext db, IPasswordHasher<Owner>
             }
 
             items.Add((holding.Name, holding.AmountMinor, holding.Currency, holding.Provenance, holding.IncludeInNetWorth, holding.IsExpectedReceivable, false));
+        }
+
+        var liabilities = await db.Liabilities.Where(l => l.OwnerId == owner.Id && l.IsActive && l.BalanceMinor > 0).ToListAsync(ct);
+        foreach (var liability in liabilities)
+        {
+            items.Add((liability.Name + " (Debt)", liability.BalanceMinor, liability.Currency, liability.Provenance, true, false, true));
+        }
+
+        var fixedAssets = await db.FixedAssets.Where(f => f.OwnerId == owner.Id && f.IsActive && f.IncludeInNetWorth && f.CurrentValuationMinor > 0).ToListAsync(ct);
+        foreach (var asset in fixedAssets)
+        {
+            items.Add((asset.Name + " (Asset)", asset.CurrentValuationMinor, asset.Currency, Provenance.Confirmed, true, false, false));
         }
 
         var fxRows = await db.ExchangeRates.Where(r => r.OwnerId == owner.Id && r.From == Currency.Usd && r.To == Currency.Ngn)

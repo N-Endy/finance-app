@@ -210,6 +210,23 @@ public sealed class FinanceController(FinanceOsService finance) : ControllerBase
         return Ok();
     }
 
+    [HttpGet("businesses")]
+    public Task<IReadOnlyList<BusinessDto>> Businesses(CancellationToken ct) => finance.BusinessesAsync(ct);
+
+    [HttpGet("businesses/{slug}")]
+    public Task<BusinessDto> BusinessBySlug(string slug, CancellationToken ct) => finance.BusinessBySlugAsync(slug, ct);
+
+    [HttpPost("businesses")]
+    public Task<BusinessDto> CreateBusiness([FromBody] BusinessWriteRequest request, CancellationToken ct) =>
+        finance.CreateBusinessAsync(request, ct);
+
+    [HttpPut("businesses/{slug}/split")]
+    public async Task<IActionResult> SplitBusiness(string slug, [FromBody] SplitRequest request, CancellationToken ct)
+    {
+        await finance.UpdateBusinessSplitAsync(slug, request.ReinvestPercent, request.PersonalPercent, ct);
+        return Ok();
+    }
+
     [HttpGet("business/matchpredictor")]
     public Task<BusinessDto> Business(CancellationToken ct) => finance.BusinessAsync(ct);
 
@@ -217,6 +234,34 @@ public sealed class FinanceController(FinanceOsService finance) : ControllerBase
     public async Task<IActionResult> Split([FromBody] SplitRequest request, CancellationToken ct)
     {
         await finance.UpdateBusinessSplitAsync(request.ReinvestPercent, request.PersonalPercent, ct);
+        return Ok();
+    }
+
+    [HttpGet("liabilities")]
+    public Task<IReadOnlyList<LiabilityDto>> Liabilities(CancellationToken ct) => finance.LiabilitiesAsync(ct);
+
+    [HttpPost("liabilities")]
+    public Task<LiabilityDto> CreateLiability([FromBody] LiabilityWriteRequest request, CancellationToken ct) =>
+        finance.CreateLiabilityAsync(request, ct);
+
+    [HttpPut("liabilities/{id:guid}")]
+    public async Task<IActionResult> UpdateLiability(Guid id, [FromBody] LiabilityBalanceUpdateRequest request, CancellationToken ct)
+    {
+        await finance.UpdateLiabilityAsync(id, request.Balance, ct);
+        return Ok();
+    }
+
+    [HttpGet("counterparty-loans")]
+    public Task<IReadOnlyList<CounterpartyLoanDto>> CounterpartyLoans(CancellationToken ct) => finance.CounterpartyLoansAsync(ct);
+
+    [HttpPost("counterparty-loans")]
+    public Task<CounterpartyLoanDto> CreateCounterpartyLoan([FromBody] CounterpartyLoanWriteRequest request, CancellationToken ct) =>
+        finance.CreateCounterpartyLoanAsync(request, ct);
+
+    [HttpPut("counterparty-loans/{id:guid}")]
+    public async Task<IActionResult> UpdateCounterpartyLoan(Guid id, [FromBody] CounterpartyLoanUpdateRequest request, CancellationToken ct)
+    {
+        await finance.UpdateCounterpartyLoanAsync(id, request.BalanceRemaining, request.Status, ct);
         return Ok();
     }
 
@@ -297,6 +342,42 @@ public sealed class FinanceController(FinanceOsService finance) : ControllerBase
     public async Task<ActionResult<object>> ImportXlsx([FromBody] CsvImportRequest request, CancellationToken ct) =>
         Ok(new { imported = await finance.ImportCsvAsync(request.Csv, ct) });
 
+    [HttpGet("spending-velocity")]
+    public Task<SpendingVelocityDto> SpendingVelocity(CancellationToken ct) => finance.GetSpendingVelocityAsync(ct);
+
+    [HttpPost("statements/parse")]
+    public Task<StatementParseResultDto> ParseStatement([FromBody] StatementParseRequest request, CancellationToken ct) =>
+        finance.ParseStatementAsync(request, ct);
+
+    [HttpPost("statements/commit")]
+    public async Task<ActionResult<object>> CommitStatement([FromBody] StatementCommitRequest request, CancellationToken ct) =>
+        Ok(new { committed = await finance.CommitStatementAsync(request, ct) });
+
+    [HttpGet("fixed-assets")]
+    public Task<IReadOnlyList<FixedAssetDto>> FixedAssets(CancellationToken ct) => finance.FixedAssetsAsync(ct);
+
+    [HttpPost("fixed-assets")]
+    public Task<FixedAssetDto> CreateFixedAsset([FromBody] FixedAssetWriteRequest request, CancellationToken ct) =>
+        finance.CreateFixedAssetAsync(request, ct);
+
+    [HttpPut("fixed-assets/{id:guid}")]
+    public async Task<IActionResult> UpdateFixedAsset(Guid id, [FromBody] FixedAssetWriteRequest request, CancellationToken ct)
+    {
+        await finance.UpdateFixedAssetAsync(id, request, ct);
+        return Ok();
+    }
+
+    [HttpPut("holdings/{slug}/valuation")]
+    public Task<HoldingDto> UpdateHoldingValuation(string slug, [FromBody] HoldingValuationUpdateRequest request, CancellationToken ct) =>
+        finance.UpdateHoldingValuationAsync(slug, request, ct);
+
+    [HttpPost("budget/rebalance")]
+    public async Task<IActionResult> RebalanceBudget([FromBody] EnvelopeRebalanceRequest request, CancellationToken ct)
+    {
+        await finance.RebalanceEnvelopesAsync(request, ct);
+        return Ok();
+    }
+
     [HttpDelete("data")]
     public async Task<IActionResult> DeleteAll(CancellationToken ct)
     {
@@ -327,3 +408,5 @@ public sealed record FamilyLineWriteRequest(decimal Amount, string Purpose);
 public sealed record BudgetLineWriteRequest(decimal Amount);
 public sealed record GoalWriteRequest(decimal Target, decimal Monthly);
 public sealed record CsvImportRequest(string Csv);
+public sealed record LiabilityBalanceUpdateRequest(decimal Balance);
+public sealed record CounterpartyLoanUpdateRequest(decimal BalanceRemaining, string Status);

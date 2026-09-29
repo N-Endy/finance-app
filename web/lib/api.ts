@@ -1,8 +1,8 @@
 import type {
   Account, ActionItem, AlertItem, AllocationLine, Assistant, AuthStatus, BudgetItem,
-  Business, CalendarItem, Dashboard, Explain, ExchangeRate, FamilyRow, Goal, Holding, IncomePreview,
-  MoneyMapNode, Pension, Preview, Reconciliation, Report, Retirement, Rule, Settings,
-  Subscription, Transaction, Violation
+  Business, CalendarItem, CounterpartyLoan, Dashboard, Envelope, Explain, ExchangeRate, FamilyRow, FixedAsset, Goal, Holding, IncomePreview,
+  Liability, MoneyMapNode, Pension, Preview, Reconciliation, Report, Retirement, Rule, Settings,
+  SpendingVelocity, StatementParseResult, Subscription, Transaction, Violation
 } from "@/lib/types";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "";
@@ -49,7 +49,7 @@ export const api = {
   reconciliation: (id: string) => request<Reconciliation>(`/api/v1/accounts/${id}/reconciliation`),
   snapshot: (id: string, body: object) => request(`/api/v1/accounts/${id}/snapshots`, { method: "POST", body: JSON.stringify(body) }),
   assign: (id: string, body: object) => request(`/api/v1/accounts/${id}/assignments`, { method: "POST", body: JSON.stringify(body) }),
-  envelopes: () => request("/api/v1/envelopes"),
+  envelopes: () => request<Envelope[]>("/api/v1/envelopes"),
   transactions: (query = "") => request<Transaction[]>(`/api/v1/transactions${query}`),
   preview: (body: object) => request<Preview>("/api/v1/transactions/preview", { method: "POST", body: JSON.stringify(body) }),
   createTx: (body: object) => request("/api/v1/transactions", { method: "POST", body: JSON.stringify(body) }),
@@ -73,8 +73,17 @@ export const api = {
   updatePension: (body: object) => request("/api/v1/pension", { method: "PUT", body: JSON.stringify(body) }),
   retirement: () => request<Retirement>("/api/v1/retirement"),
   updateRetirement: (body: object) => request("/api/v1/retirement", { method: "PUT", body: JSON.stringify(body) }),
-  business: () => request<Business>("/api/v1/business/matchpredictor"),
+  business: (slug = "matchpredictor") => request<Business>(`/api/v1/businesses/${slug}`),
+  businesses: () => request<Business[]>("/api/v1/businesses"),
+  createBusiness: (body: object) => request<Business>("/api/v1/businesses", { method: "POST", body: JSON.stringify(body) }),
   split: (body: object) => request("/api/v1/business/matchpredictor/split", { method: "PUT", body: JSON.stringify(body) }),
+  splitBusiness: (slug: string, body: object) => request(`/api/v1/businesses/${slug}/split`, { method: "PUT", body: JSON.stringify(body) }),
+  liabilities: () => request<Liability[]>("/api/v1/liabilities"),
+  createLiability: (body: object) => request<Liability>("/api/v1/liabilities", { method: "POST", body: JSON.stringify(body) }),
+  updateLiability: (id: string, body: object) => request(`/api/v1/liabilities/${id}`, { method: "PUT", body: JSON.stringify(body) }),
+  counterpartyLoans: () => request<CounterpartyLoan[]>("/api/v1/counterparty-loans"),
+  createCounterpartyLoan: (body: object) => request<CounterpartyLoan>("/api/v1/counterparty-loans", { method: "POST", body: JSON.stringify(body) }),
+  updateCounterpartyLoan: (id: string, body: object) => request(`/api/v1/counterparty-loans/${id}`, { method: "PUT", body: JSON.stringify(body) }),
   actions: () => request<ActionItem[]>("/api/v1/actions"),
   resolveAction: (id: string, verb: "complete" | "skip" | "snooze") => request(`/api/v1/actions/${id}/${verb}`, { method: "POST" }),
   calendar: (year: number, month: number) => request<CalendarItem[]>(`/api/v1/calendar?year=${year}&month=${month}`),
@@ -89,6 +98,16 @@ export const api = {
   report: (name: string, from: string, to: string) => request<Report>(`/api/v1/reports/${name}?from=${from}&to=${to}`),
   ask: (message: string) => request<Assistant>("/api/v1/assistant", { method: "POST", body: JSON.stringify({ message }) }),
   importCsv: (csv: string) => request<{ imported: number }>("/api/v1/imports/csv", { method: "POST", body: JSON.stringify({ csv }) }),
+  spendingVelocity: () => request<SpendingVelocity>("/api/v1/spending-velocity"),
+  parseStatement: (body: { content: string; bankFormat?: string; defaultAccountId?: string }) =>
+    request<StatementParseResult>("/api/v1/statements/parse", { method: "POST", body: JSON.stringify(body) }),
+  commitStatement: (transactions: object[]) =>
+    request<{ committed: number }>("/api/v1/statements/commit", { method: "POST", body: JSON.stringify({ transactions }) }),
+  fixedAssets: () => request<FixedAsset[]>("/api/v1/fixed-assets"),
+  createFixedAsset: (body: object) => request<FixedAsset>("/api/v1/fixed-assets", { method: "POST", body: JSON.stringify(body) }),
+  updateFixedAsset: (id: string, body: object) => request(`/api/v1/fixed-assets/${id}`, { method: "PUT", body: JSON.stringify(body) }),
+  updateHoldingValuation: (slug: string, body: object) => request<Holding>(`/api/v1/holdings/${slug}/valuation`, { method: "PUT", body: JSON.stringify(body) }),
+  rebalanceBudget: (body: object) => request("/api/v1/budget/rebalance", { method: "POST", body: JSON.stringify(body) }),
   deleteAll: () => request("/api/v1/data", { method: "DELETE" }),
   exportUrl: (format: string) => `${API}/api/v1/exports/${format}`
 };

@@ -9,7 +9,7 @@ import { api } from "@/lib/api";
 const nav = [
   { group: "Position", items: [["/", "Home"], ["/today", "Today"], ["/money", "Map"], ["/transactions", "Transactions"]] as const },
   { group: "Plan", items: [["/goals", "Goals"], ["/budget", "Budget"], ["/accounts", "Accounts"]] as const },
-  { group: "Wealth", items: [["/investments", "Investments"], ["/business", "Business"]] as const },
+  { group: "Wealth", items: [["/investments", "Investments"], ["/business", "Business"], ["/debt", "Debt & Loans"]] as const },
   { group: "Review", items: [["/reports", "Reports"], ["/settings", "Settings"]] as const }
 ];
 

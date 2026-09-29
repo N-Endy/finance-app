@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from "react";
 import { Shell, Card } from "@/components/ui";
+import { SpendingVelocityWidget } from "@/components/spending-velocity";
+import { OfflineIndicator } from "@/components/offline-indicator";
 import { api } from "@/lib/api";
 import { failMessage } from "@/lib/feedback";
 import type { ActionItem, AlertItem, Violation } from "@/lib/types";
@@ -59,6 +61,9 @@ export default function TodayPage() {
       <p className="lede">Today&apos;s recommended actions. Completing one records that you handled it.</p>
       {message && <p className="sentence">{message}</p>}
       {error && <p className="error">{error}</p>}
+
+      <OfflineIndicator />
+      <SpendingVelocityWidget />
 
       <Card title="Alerts, ranked">
         {alerts.map((alert) => <p key={alert.message}><strong>{alert.priority}.</strong> {alert.message}</p>)}

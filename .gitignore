@@ -21,3 +21,6 @@ uploads/
 logs/
 .agent/
 .agents/
+.dotnet/
+.local/
+*.tsbuildinfo

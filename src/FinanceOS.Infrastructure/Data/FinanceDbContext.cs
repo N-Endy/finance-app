@@ -27,6 +27,9 @@ public sealed class FinanceDbContext(DbContextOptions<FinanceDbContext> options)
     public DbSet<Subscription> Subscriptions => Set<Subscription>();
     public DbSet<RecurringItem> RecurringItems => Set<RecurringItem>();
     public DbSet<Business> Businesses => Set<Business>();
+    public DbSet<Liability> Liabilities => Set<Liability>();
+    public DbSet<CounterpartyLoan> CounterpartyLoans => Set<CounterpartyLoan>();
+    public DbSet<FixedAsset> FixedAssets => Set<FixedAsset>();
     public DbSet<FinancialRule> Rules => Set<FinancialRule>();
     public DbSet<RuleViolation> Violations => Set<RuleViolation>();
     public DbSet<FinancialAction> Actions => Set<FinancialAction>();
@@ -42,8 +45,13 @@ public sealed class FinanceDbContext(DbContextOptions<FinanceDbContext> options)
         model.Entity<Category>().HasIndex(x => new { x.OwnerId, x.Slug }).IsUnique();
         model.Entity<Goal>().HasIndex(x => new { x.OwnerId, x.Slug }).IsUnique();
         model.Entity<Holding>().HasIndex(x => new { x.OwnerId, x.Slug }).IsUnique();
+        model.Entity<Holding>().Property(x => x.UnitsHeld).HasPrecision(18, 6);
+        model.Entity<Holding>().Property(x => x.CostBasisMajor).HasPrecision(18, 4);
+        model.Entity<Holding>().Property(x => x.CurrentUnitPrice).HasPrecision(18, 4);
         model.Entity<IncomeSource>().HasIndex(x => new { x.OwnerId, x.Slug }).IsUnique();
         model.Entity<Business>().HasIndex(x => new { x.OwnerId, x.Slug }).IsUnique();
+        model.Entity<Liability>().HasIndex(x => new { x.OwnerId, x.Slug }).IsUnique();
+        model.Entity<FixedAsset>().HasIndex(x => new { x.OwnerId, x.Name });
         model.Entity<FinancialRule>().HasIndex(x => new { x.OwnerId, x.Code }).IsUnique();
         model.Entity<ExchangeRate>().Property(x => x.Rate).HasPrecision(18, 6);
         model.Entity<RetirementAssumption>().Property(x => x.ConservativeReturn).HasPrecision(8, 4);

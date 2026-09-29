@@ -145,7 +145,19 @@ public sealed record GoalDto(
     MoneyDto Monthly, DateOnly? Deadline, MoneyDto? RequiredMonthly, DateOnly? ProjectedCompletion, bool IsAspiration);
 
 public sealed record HoldingDto(
-    Guid Id, string Name, MoneyDto Amount, string Liquidity, string Purpose, string StatusNote, bool IsExpectedReceivable);
+    Guid Id,
+    string Name,
+    MoneyDto Amount,
+    string Liquidity,
+    string Purpose,
+    string StatusNote,
+    bool IsExpectedReceivable,
+    decimal? UnitsHeld = null,
+    decimal? CostBasisMajor = null,
+    decimal? CurrentUnitPrice = null,
+    string? Symbol = null,
+    string? AssetClass = null,
+    decimal? UnrealizedPnLMajor = null);
 
 public sealed record BudgetItemDto(
     string Category, MoneyDto Budget, MoneyDto Actual, MoneyDto Remaining, string PercentUsed, string Status, string Sentence);
@@ -162,8 +174,65 @@ public sealed record SubscriptionDto(
 public sealed record FamilySupportDto(
     Guid Id, string Recipient, DateOnly Date, MoneyDto Amount, string Kind, string Purpose);
 public sealed record BusinessDto(
-    string Name, MoneyDto Revenue, MoneyDto Expenses, MoneyDto Net, int ReinvestPercent, int PersonalPercent,
+    Guid Id,
+    string Slug,
+    string Name,
+    string? Description,
+    MoneyDto Revenue,
+    MoneyDto Expenses,
+    MoneyDto Net,
+    int ReinvestPercent,
+    int PersonalPercent,
+    bool IsActive,
     IReadOnlyList<BusinessLineDto> Lines);
+public sealed record BusinessWriteRequest(
+    string Name,
+    string? Slug,
+    string? Description,
+    int ReinvestPercent,
+    int PersonalPercent);
+public sealed record LiabilityDto(
+    Guid Id,
+    string Slug,
+    string Name,
+    string Lender,
+    MoneyDto Principal,
+    MoneyDto Balance,
+    decimal InterestRatePercent,
+    MoneyDto MonthlyPayment,
+    DateOnly? DueDate,
+    string Provenance,
+    string? Notes,
+    bool IsActive);
+public sealed record LiabilityWriteRequest(
+    string Name,
+    string? Slug,
+    string Lender,
+    decimal Principal,
+    decimal Balance,
+    string Currency,
+    decimal InterestRatePercent,
+    decimal MonthlyPayment,
+    DateOnly? DueDate,
+    string? Notes);
+public sealed record CounterpartyLoanDto(
+    Guid Id,
+    string BorrowerName,
+    MoneyDto Amount,
+    MoneyDto BalanceRemaining,
+    DateOnly LentDate,
+    DateOnly? ExpectedRepaymentDate,
+    string Status,
+    string? Notes,
+    bool IsActive);
+public sealed record CounterpartyLoanWriteRequest(
+    string BorrowerName,
+    decimal Amount,
+    decimal BalanceRemaining,
+    string Currency,
+    DateOnly LentDate,
+    DateOnly? ExpectedRepaymentDate,
+    string? Notes);
 public sealed record BusinessLineDto(string Category, MoneyDto Amount);
 public sealed record RuleDto(Guid Id, string Code, string Title, string Action, string Control, bool IsActive);
 public sealed record ViolationDto(Guid Id, string Rule, string Message, DateOnly Date, bool IsOpen);
@@ -197,3 +266,88 @@ public sealed record UpdateSettingsRequest(
     int? BusinessPersonalPercent,
     bool? HasMoved);
 public sealed record RecurringItemDto(Guid Id, string Name, int DayOfMonth, MoneyDto? Amount, string Kind);
+
+public sealed record StatementParseRequest(
+    string Content,
+    string? BankFormat = null,
+    Guid? DefaultAccountId = null);
+
+public sealed record ParsedTransactionDraftDto(
+    int TempIndex,
+    DateOnly Date,
+    string Description,
+    decimal Amount,
+    string Currency,
+    string Type,
+    Guid? AccountId,
+    string? AccountName,
+    Guid? CounterpartyAccountId,
+    string? CounterpartyAccountName,
+    Guid? CategoryId,
+    string? CategoryName,
+    bool IsTransfer,
+    bool IsDuplicate,
+    string? DuplicateReason,
+    bool NeedsReview,
+    string RawNarration);
+
+public sealed record StatementParseResultDto(
+    string DetectedBank,
+    int TotalParsed,
+    int DuplicatesCount,
+    int TransfersCount,
+    IReadOnlyList<ParsedTransactionDraftDto> Items);
+
+public sealed record StatementCommitRequest(
+    IReadOnlyList<TransactionWriteRequest> Transactions);
+
+public sealed record SpendingVelocityDto(
+    MoneyDto AllowedBurnPerDayRemaining,
+    MoneyDto ActualDailySpendVelocity,
+    decimal PacingRatio,
+    string PacingStatus,
+    int DaysRemainingInMonth,
+    int DaysElapsedInMonth,
+    MoneyDto ProjectedMonthEndSpend,
+    MoneyDto MonthToDateSpend,
+    MoneyDto SpendablePool,
+    string PacingSentence);
+
+public sealed record FixedAssetDto(
+    Guid Id,
+    string Name,
+    string Category,
+    MoneyDto PurchasePrice,
+    MoneyDto CurrentValuation,
+    DateOnly PurchaseDate,
+    int UsefulLifeMonths,
+    MoneyDto SalvageValue,
+    string? Notes,
+    bool IncludeInNetWorth,
+    bool IsActive);
+
+public sealed record FixedAssetWriteRequest(
+    string Name,
+    string Category,
+    decimal PurchasePrice,
+    decimal CurrentValuation,
+    string Currency,
+    DateOnly PurchaseDate,
+    int UsefulLifeMonths,
+    decimal SalvageValue,
+    string? Notes,
+    bool IncludeInNetWorth);
+
+public sealed record HoldingValuationUpdateRequest(
+    decimal? UnitsHeld,
+    decimal? CostBasisMajor,
+    decimal? CurrentUnitPrice,
+    string? Symbol,
+    string? AssetClass,
+    DateOnly AsOf);
+
+public sealed record EnvelopeRebalanceRequest(
+    Guid FromEnvelopeId,
+    Guid ToEnvelopeId,
+    decimal Amount,
+    string? Notes);

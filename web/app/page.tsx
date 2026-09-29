@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { Shell, Card, MoneyView, ExplainModal } from "@/components/ui";
+import { SpendingVelocityWidget } from "@/components/spending-velocity";
+import { OfflineIndicator } from "@/components/offline-indicator";
 import { AskLedger } from "@/components/ask-ledger";
 import { api } from "@/lib/api";
 import type { Dashboard } from "@/lib/types";
@@ -24,6 +26,8 @@ export default function HomePage() {
       <h1>How am I doing financially?</h1>
       <p className="lede">Net worth, spendable cash, and the jobs your money already has.</p>
 
+      <OfflineIndicator />
+
       {data.unknowns.length > 0 && (
         <Card title="Still to enter">
           <ul>{data.unknowns.map((item) => (
@@ -31,6 +35,10 @@ export default function HomePage() {
           ))}</ul>
         </Card>
       )}
+
+      <div style={{ marginTop: 16 }}>
+        <SpendingVelocityWidget />
+      </div>
 
       <div className="grid four" style={{ marginTop: 16 }}>
         <button className="card map-node" onClick={() => setMetric("net-worth")}>

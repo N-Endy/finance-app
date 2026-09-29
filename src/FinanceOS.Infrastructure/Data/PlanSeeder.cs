@@ -60,6 +60,9 @@ public static class PlanSeeder
         db.RemoveRange(await db.ExternalNotes.Where(n => n.OwnerId == owner.Id).ToListAsync(ct));
         db.RemoveRange(await db.ActualCharges.Where(c => c.OwnerId == owner.Id).ToListAsync(ct));
         db.RemoveRange(await db.Businesses.Where(b => b.OwnerId == owner.Id).ToListAsync(ct));
+        db.RemoveRange(await db.Liabilities.Where(l => l.OwnerId == owner.Id).ToListAsync(ct));
+        db.RemoveRange(await db.CounterpartyLoans.Where(l => l.OwnerId == owner.Id).ToListAsync(ct));
+        db.RemoveRange(await db.FixedAssets.Where(f => f.OwnerId == owner.Id).ToListAsync(ct));
         db.RemoveRange(await db.ExchangeRates.Where(r => r.OwnerId == owner.Id).ToListAsync(ct));
         db.RemoveRange(await db.Pensions.Where(p => p.OwnerId == owner.Id).ToListAsync(ct));
         db.RemoveRange(await db.RetirementAssumptions.Where(r => r.OwnerId == owner.Id).ToListAsync(ct));

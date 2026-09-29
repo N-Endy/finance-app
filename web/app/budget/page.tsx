@@ -4,7 +4,7 @@ import { FormEvent, useEffect, useState } from "react";
 import { Shell, Card, Reveal } from "@/components/ui";
 import { api } from "@/lib/api";
 import { failMessage } from "@/lib/feedback";
-import type { AllocationLine, BudgetItem, CalendarItem, FamilyRow, IncomePreview, Rule } from "@/lib/types";
+import type { AllocationLine, BudgetItem, CalendarItem, Envelope, FamilyRow, IncomePreview, Rule } from "@/lib/types";
 
 function major(value: number | null | undefined) {
   return value == null ? "" : String(value);
@@ -12,6 +12,7 @@ function major(value: number | null | undefined) {
 
 export default function BudgetPage() {
   const [items, setItems] = useState<BudgetItem[]>([]);
+  const [envelopes, setEnvelopes] = useState<Envelope[]>([]);
   const [salary, setSalary] = useState<AllocationLine[]>([]);
   const [family, setFamily] = useState<FamilyRow[]>([]);
   const [calendar, setCalendar] = useState<CalendarItem[]>([]);
@@ -22,24 +23,61 @@ export default function BudgetPage() {
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [showRebalance, setShowRebalance] = useState(false);
+  const [fromEnvelopeId, setFromEnvelopeId] = useState("");
+  const [toEnvelopeId, setToEnvelopeId] = useState("");
+  const [rebalanceAmount, setRebalanceAmount] = useState("");
+  const [rebalanceNotes, setRebalanceNotes] = useState("");
   const today = new Date();
   const date = today.toISOString().slice(0, 10);
 
   async function load() {
-    const [budgetItems, salaryLines, familyRows, calendarItems, planRules] = await Promise.all([
+    const [budgetItems, envs, salaryLines, familyRows, calendarItems, planRules] = await Promise.all([
       api.budget(),
+      api.envelopes(),
       api.plan("salary"),
       api.family(),
       api.calendar(today.getFullYear(), today.getMonth() + 1),
       api.rules()
     ]);
     setItems(budgetItems);
+    setEnvelopes(envs);
     setSalary(salaryLines);
     setFamily(familyRows);
     setCalendar(calendarItems);
     setRules(planRules);
     setDrafts(Object.fromEntries(budgetItems.filter((item) => item.category !== "Betting").map((item) => [item.category, major(item.budget.major)])));
     setFamilyDrafts(Object.fromEntries(familyRows.filter((row) => row.kind === "Recurring").map((row) => [row.id, major(row.amount.major)])));
+    if (!fromEnvelopeId && envs.length > 0) setFromEnvelopeId(envs[0].id);
+    if (!toEnvelopeId && envs.length > 1) setToEnvelopeId(envs[1].id);
+  }
+
+  async function handleRebalance(event: FormEvent) {
+    event.preventDefault();
+    if (!fromEnvelopeId || !toEnvelopeId || !rebalanceAmount) {
+      setError("Please pick both source and target envelopes and enter an amount.");
+      return;
+    }
+    setError(null);
+    setMessage(null);
+    setBusy("rebalance");
+    try {
+      await api.rebalanceBudget({
+        fromEnvelopeId,
+        toEnvelopeId,
+        amount: Number(rebalanceAmount),
+        notes: rebalanceNotes || "Roll with the punches rebalance"
+      });
+      await load();
+      setShowRebalance(false);
+      setRebalanceAmount("");
+      setRebalanceNotes("");
+      setMessage("Rebalanced envelopes. Zero-sum balance preserved.");
+    } catch (err) {
+      setError(failMessage(err));
+    } finally {
+      setBusy(null);
+    }
   }
 
   useEffect(() => { void load().catch((err) => setError(failMessage(err))); }, []);
@@ -113,10 +151,59 @@ export default function BudgetPage() {
       {message && <p className="sentence">{message}</p>}
       {error && <p className="error">{error}</p>}
 
-      <div className="row">
+      <div className="row" style={{ gap: 8 }}>
         <button className="btn" disabled={busy === "salary"} onClick={() => void previewIncome("salary")}>Preview salary waterfall</button>
         <button className="btn ghost" disabled={busy === "secondary"} onClick={() => void previewIncome("secondary")}>Preview ₦400k waterfall</button>
+        <button className="btn ghost" onClick={() => setShowRebalance((v) => !v)}>
+          {showRebalance ? "Hide Rebalance" : "Roll with the punches (Rebalance envelopes)"}
+        </button>
       </div>
+
+      {showRebalance && (
+        <Reveal watch={showRebalance}>
+          <Card title="Roll with the punches (Envelope rebalance)">
+            <p className="sentence">
+              Move money from an envelope with surplus or buffer to cover an overspent envelope. Total account balances remain completely unchanged.
+            </p>
+            <form className="stack" onSubmit={handleRebalance} style={{ marginTop: 12 }}>
+              <div className="grid two">
+                <div>
+                  <label style={{ fontSize: "0.8rem", color: "var(--text-muted)", display: "block", marginBottom: 4 }}>
+                    Move money from:
+                  </label>
+                  <select value={fromEnvelopeId} onChange={(e) => setFromEnvelopeId(e.target.value)}>
+                    {envelopes.map((e) => <option key={e.id} value={e.id}>{e.name} ({e.class})</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label style={{ fontSize: "0.8rem", color: "var(--text-muted)", display: "block", marginBottom: 4 }}>
+                    To envelope:
+                  </label>
+                  <select value={toEnvelopeId} onChange={(e) => setToEnvelopeId(e.target.value)}>
+                    {envelopes.filter((e) => e.id !== fromEnvelopeId).map((e) => <option key={e.id} value={e.id}>{e.name} ({e.class})</option>)}
+                  </select>
+                </div>
+              </div>
+              <div className="grid two">
+                <input
+                  value={rebalanceAmount}
+                  onChange={(e) => setRebalanceAmount(e.target.value)}
+                  placeholder="Amount to move (₦)"
+                  inputMode="decimal"
+                />
+                <input
+                  value={rebalanceNotes}
+                  onChange={(e) => setRebalanceNotes(e.target.value)}
+                  placeholder="Reason / notes (optional)"
+                />
+              </div>
+              <button className="btn" type="submit" disabled={busy === "rebalance"}>
+                {busy === "rebalance" ? "Rebalancing…" : "Execute Zero-Sum Rebalance"}
+              </button>
+            </form>
+          </Card>
+        </Reveal>
+      )}
       {preview && (
         <Reveal watch={preview.planName}>
           <Card title={preview.planName}>

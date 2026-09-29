@@ -3,7 +3,10 @@ namespace FinanceOS.Domain;
 public enum Currency
 {
     Ngn = 1,
-    Usd = 2
+    Usd = 2,
+    Gbp = 3,
+    Eur = 4,
+    Usdt = 5
 }
 
 /// <summary>
@@ -81,7 +84,15 @@ public readonly record struct Money(long MinorUnits, Currency Currency)
 
     public string Format()
     {
-        var symbol = Currency == Currency.Ngn ? "₦" : "$";
+        var symbol = Currency switch
+        {
+            Currency.Ngn => "₦",
+            Currency.Usd => "$",
+            Currency.Gbp => "£",
+            Currency.Eur => "€",
+            Currency.Usdt => "₮",
+            _ => ""
+        };
         return $"{symbol}{Major.ToString("#,##0.00", System.Globalization.CultureInfo.InvariantCulture)}";
     }
 
