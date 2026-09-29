@@ -45,7 +45,23 @@ public class ApiFlowTests : IClassFixture<WebApplicationFactory<Program>>
         var explain = await client.GetFromJsonAsync<ExplainDto>("/api/v1/explain/net-worth");
         Assert.NotNull(explain);
         Assert.Contains("UNKNOWN", explain!.Sentence);
-        Assert.Contains(explain.Lines, line => line.Label.Contains("Rotating") || line.Note?.Contains("EXPECTED") == true);
+
+        var holdings = await client.GetFromJsonAsync<HoldingDto[]>("/api/v1/holdings");
+        Assert.NotNull(holdings);
+        Assert.Contains(holdings!, h => h.Name.Contains("Rotating", StringComparison.OrdinalIgnoreCase));
+        Assert.All(holdings!, h => Assert.Equal("UNKNOWN", h.Amount.Formatted));
+
+        var pension = await client.GetFromJsonAsync<PensionDto>("/api/v1/pension");
+        Assert.NotNull(pension);
+        Assert.Equal("UNKNOWN", pension!.Balance.Formatted);
+
+        var accounts = await client.GetFromJsonAsync<AccountDto[]>("/api/v1/accounts");
+        Assert.NotNull(accounts);
+        Assert.All(accounts!, a => Assert.True(a.LatestBalance is null || a.LatestBalance.Formatted == "UNKNOWN"));
+
+        var txs = await client.GetFromJsonAsync<TransactionDto[]>("/api/v1/transactions");
+        Assert.NotNull(txs);
+        Assert.Empty(txs!);
     }
 
     [Fact]

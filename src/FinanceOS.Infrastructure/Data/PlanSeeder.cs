@@ -6,7 +6,7 @@ namespace FinanceOS.Infrastructure.Data;
 
 public static class PlanSeeder
 {
-    public const string SnapshotName = "Nnamdi_Comprehensive_Financial_Plan_v2_Updated";
+    public const string SnapshotName = "Nnamdi_Comprehensive_Financial_Plan_v2_EmptyLedger";
     public const string SnapshotTopic = "plan-snapshot";
     public static readonly DateOnly CaptureDate = new(2026, 9, 26);
 
@@ -108,17 +108,15 @@ public static class PlanSeeder
         db.Pensions.Add(new PensionAccount
         {
             OwnerId = owner.Id,
-            CurrentBalanceMinor = 83_403_700,
-            Provenance = Provenance.LastKnown
+            CurrentBalanceMinor = null,
+            Provenance = Provenance.Unknown
         });
         db.RetirementAssumptions.Add(new RetirementAssumption { OwnerId = owner.Id });
 
-        SeedSnapshots(db, accounts);
-        SeedLedger(db, owner.Id, accounts, categories, envelopes, business.Id);
         SeedExampleAssignments(db, accounts, envelopes);
 
         owner.PlanSeeded = true;
-        owner.HomeSavingsLockNote = "Home Savings was locked until Oct 8 at capture.";
+        owner.HomeSavingsLockNote = null;
         await db.SaveChangesAsync(ct);
     }
 
@@ -186,7 +184,7 @@ public static class PlanSeeder
                 "Home savings.",
                 "Daily spending.",
                 "Housing / move.",
-                "Locked until Oct 8 at capture.",
+                "Balance is unknown until entered.",
                 null, null, false),
             ["cowrywise-stocks"] = A("cowrywise-stocks", "Cowrywise Stocks", "Cowrywise", AccountRole.InvestmentBroker,
                 "Nigerian stocks.",
@@ -216,13 +214,13 @@ public static class PlanSeeder
                 "Small daily cash.",
                 "Savings.",
                 "Transport and small purchases.",
-                "Last-known ₦3,800.",
+                "Balance is unknown until entered.",
                 0, null, true),
             ["bamboo-ng"] = A("bamboo-ng", "Bamboo Nigerian Stocks", "Bamboo", AccountRole.InvestmentBroker,
                 "Nigerian stocks.",
                 "Spending.",
                 "Investments.",
-                "Last-known figure.",
+                "Balance is unknown until entered.",
                 null, null, false),
             ["bamboo-us"] = A("bamboo-us", "Bamboo US Stocks", "Bamboo", AccountRole.InvestmentBroker,
                 "US stocks.",
@@ -246,7 +244,7 @@ public static class PlanSeeder
                 "Betting wallet, awareness only.",
                 "Plan money.",
                 "Allocation is ₦0.",
-                "Partial August data. Profit or loss is unknown.",
+                "Balance is unknown until entered. Profit or loss is unknown.",
                 null, null, false, false)
         };
     }
@@ -408,7 +406,7 @@ public static class PlanSeeder
                 L(10, "MMF", AllocationKind.Fixed, 5_000_000, "mmf", "cowrywise-mmf", null, "Review fund terms"),
                 L(11, "Children Savings", AllocationKind.Fixed, 2_000_000, "children", "cowrywise-children", "children", "Leave untouched"),
                 L(12, "Rotating Savings", AllocationKind.Fixed, 10_000_000, "rotating", "rotating-savings", "housing", "Treat as moving capital"),
-                L(13, "Home Savings", AllocationKind.Fixed, 500_000, "home", "cowrywise-home", "housing", "Current known balance ₦37,336"),
+                L(13, "Home Savings", AllocationKind.Fixed, 500_000, "home", "cowrywise-home", "housing", "Enter the current home savings figure"),
                 L(14, "Operating Reserve", AllocationKind.Fixed, 2_600_000, "operating-reserve", "stanbic", "operating-reserve", "Build toward ₦100k floor")
             ]
         };
@@ -444,32 +442,32 @@ public static class PlanSeeder
 
     private static List<Holding> SeedHoldings(Guid ownerId, Dictionary<string, FinancialAccount> accounts) =>
     [
-        H(ownerId, "emergency", "Cowrywise Emergency Fund", accounts["cowrywise-emergency"].Id, 146_830_100, Currency.Ngn, "Liquid/low-risk", "6-month emergency reserve", "Last-known. Confirm the current balance.", false),
-        H(ownerId, "mmf", "Cowrywise MMF", accounts["cowrywise-mmf"].Id, 245_698_600, Currency.Ngn, "Liquid/low-risk", "Medium-term liquidity / wealth", "Last-known.", false),
-        H(ownerId, "children", "Children Savings", accounts["cowrywise-children"].Id, 12_812_500, Currency.Ngn, "Locked 18 years", "Long-term children goal", "Last-known.", false),
-        H(ownerId, "cw-stocks", "Cowrywise Stocks", accounts["cowrywise-stocks"].Id, 32_691_000, Currency.Ngn, "Market", "Long-term investment", "Okomu + Presco. Last-known.", false),
-        H(ownerId, "bamboo-ng", "Bamboo Nigerian Stocks", accounts["bamboo-ng"].Id, 71_835_700, Currency.Ngn, "Market", "Long-term investment", "Last-known.", false),
-        H(ownerId, "bamboo-us", "Bamboo US Stocks", accounts["bamboo-us"].Id, 31_457, Currency.Usd, "Market", "Long-term investment", "Held in USD until an FX rate is entered.", false),
-        H(ownerId, "risevest", "Risevest Real Estate", accounts["risevest"].Id, 15_869, Currency.Usd, "Illiquid/longer-term", "Real estate diversification", "Held in USD until an FX rate is entered.", false),
-        H(ownerId, "home", "Cowrywise Home Savings", accounts["cowrywise-home"].Id, 3_733_600, Currency.Ngn, "Locked until Oct 8 at capture", "Housing / move", "Last-known.", false),
-        H(ownerId, "rotating", "Rotating Family Savings", accounts["rotating-savings"].Id, 120_000_000, Currency.Ngn, "Expected payout", "Housing / move", "Expected payout.", true)
+        H(ownerId, "emergency", "Cowrywise Emergency Fund", accounts["cowrywise-emergency"].Id, Currency.Ngn, "Liquid/low-risk", "6-month emergency reserve", false),
+        H(ownerId, "mmf", "Cowrywise MMF", accounts["cowrywise-mmf"].Id, Currency.Ngn, "Liquid/low-risk", "Medium-term liquidity / wealth", false),
+        H(ownerId, "children", "Children Savings", accounts["cowrywise-children"].Id, Currency.Ngn, "Locked 18 years", "Long-term children goal", false),
+        H(ownerId, "cw-stocks", "Cowrywise Stocks", accounts["cowrywise-stocks"].Id, Currency.Ngn, "Market", "Long-term investment", false),
+        H(ownerId, "bamboo-ng", "Bamboo Nigerian Stocks", accounts["bamboo-ng"].Id, Currency.Ngn, "Market", "Long-term investment", false),
+        H(ownerId, "bamboo-us", "Bamboo US Stocks", accounts["bamboo-us"].Id, Currency.Usd, "Market", "Long-term investment", false),
+        H(ownerId, "risevest", "Risevest Real Estate", accounts["risevest"].Id, Currency.Usd, "Illiquid/longer-term", "Real estate diversification", false),
+        H(ownerId, "home", "Cowrywise Home Savings", accounts["cowrywise-home"].Id, Currency.Ngn, "Housing vault", "Housing / move", false),
+        H(ownerId, "rotating", "Rotating Family Savings", accounts["rotating-savings"].Id, Currency.Ngn, "Expected payout", "Housing / move", true)
     ];
 
-    private static Holding H(Guid ownerId, string slug, string name, Guid accountId, long amount, Currency ccy,
-        string liquidity, string purpose, string note, bool expected) =>
+    private static Holding H(Guid ownerId, string slug, string name, Guid accountId, Currency ccy,
+        string liquidity, string purpose, bool expected) =>
         new()
         {
             OwnerId = ownerId,
             Slug = slug,
             Name = name,
             AccountId = accountId,
-            AmountMinor = amount,
+            AmountMinor = 0,
             Currency = ccy,
-            Provenance = expected ? Provenance.Expected : Provenance.LastKnown,
+            Provenance = Provenance.Unknown,
             AsOf = CaptureDate,
             Liquidity = liquidity,
             Purpose = purpose,
-            StatusNote = note,
+            StatusNote = "Enter the current figure.",
             IsExpectedReceivable = expected,
             IncludeInNetWorth = !expected,
             MonthlyContributionMinor = 0
@@ -499,10 +497,10 @@ public static class PlanSeeder
         new()
         {
             OwnerId = ownerId,
-            Topic = "sportybet-august",
-            AsOf = new DateOnly(2026, 8, 31),
-            Provenance = Provenance.LastKnown,
-            Body = "August deposits ₦48,787; withdrawals ₦21,000; wallet ₦2,039.19. Net betting result is unknown."
+            Topic = "sportybet",
+            AsOf = CaptureDate,
+            Provenance = Provenance.Unknown,
+            Body = "SportyBet wallet and net betting result are unknown until you enter them. Plan allocation is ₦0."
         },
         new()
         {
@@ -518,7 +516,7 @@ public static class PlanSeeder
             Topic = "unknown-balances",
             AsOf = CaptureDate,
             Provenance = Provenance.Unknown,
-            Body = "PiggyVest, Access Bank, Stanbic after the ledger, and any FX rate are unknown until entered."
+            Body = "Every account balance, holding, pension figure, and FX rate is unknown until entered."
         },
         new()
         {
@@ -551,115 +549,11 @@ public static class PlanSeeder
         new() { OwnerId = ownerId, Name = "Domain", AmountMinor = 0, Currency = Currency.Usd, Frequency = SubscriptionFrequency.Yearly, PaymentAccountId = accounts["access"].Id, NextBillingDate = new DateOnly(2026, 12, 1), Category = "Domain", IsBusiness = true, IsActive = true }
     ];
 
-    private static void SeedSnapshots(FinanceDbContext db, Dictionary<string, FinancialAccount> accounts)
-    {
-        void Snap(string slug, long amount, Currency ccy, Provenance p, string? notes = null) =>
-            db.BalanceSnapshots.Add(new BalanceSnapshot
-            {
-                AccountId = accounts[slug].Id,
-                AmountMinor = amount,
-                Currency = ccy,
-                AsOf = CaptureDate,
-                Provenance = p,
-                Source = SnapshotName,
-                Notes = notes
-            });
-
-        Snap("kuda", 60_000, Currency.Ngn, Provenance.LastKnown, "Last-known from Assets.");
-        Snap("opay", 115_500, Currency.Ngn, Provenance.LastKnown, "Last-known from Assets.");
-        Snap("cash", 380_000, Currency.Ngn, Provenance.LastKnown, "Last-known from Assets.");
-        Snap("cowrywise-emergency", 146_830_100, Currency.Ngn, Provenance.LastKnown, "Last-known from Assets.");
-        Snap("cowrywise-mmf", 245_698_600, Currency.Ngn, Provenance.LastKnown, "Last-known from Assets.");
-        Snap("cowrywise-children", 12_812_500, Currency.Ngn, Provenance.LastKnown, "Last-known from Assets.");
-        Snap("cowrywise-home", 3_733_600, Currency.Ngn, Provenance.LastKnown, "Last-known from Assets.");
-        Snap("cowrywise-stocks", 32_691_000, Currency.Ngn, Provenance.LastKnown, "Last-known from Assets.");
-        Snap("bamboo-ng", 71_835_700, Currency.Ngn, Provenance.LastKnown, "Last-known from Assets.");
-        Snap("bamboo-us", 31_457, Currency.Usd, Provenance.LastKnown, "USD. No FX conversion.");
-        Snap("risevest", 15_869, Currency.Usd, Provenance.LastKnown, "USD. No FX conversion.");
-        Snap("sportybet", 203_919, Currency.Ngn, Provenance.LastKnown, "Wallet screenshot ₦2,039.19.");
-    }
-
     private static void SeedExampleAssignments(FinanceDbContext db, Dictionary<string, FinancialAccount> accounts, Dictionary<string, Envelope> envelopes)
     {
-        // Spec example lives as documentation assignments on a virtual illustration only if Stanbic has a confirmed ₦180k.
-        // We do not invent a Stanbic balance. No assignments are seeded for Stanbic.
+        // No envelope assignments until a confirmed account balance exists.
         _ = accounts;
         _ = envelopes;
         _ = db;
-    }
-
-    private static void SeedLedger(
-        FinanceDbContext db,
-        Guid ownerId,
-        Dictionary<string, FinancialAccount> accounts,
-        Dictionary<string, Category> categories,
-        Dictionary<string, Envelope> envelopes,
-        Guid businessId)
-    {
-        void Tx(
-            DateOnly date, string account, TransactionType type, string? category, string description,
-            long inflow, long outflow, long fee, bool transfer, string? notes, string? other = null,
-            bool business = false, string? env = null)
-        {
-            var amount = inflow > 0 ? inflow : outflow;
-            var signedForAccount = inflow > 0 ? inflow : -outflow;
-            var tx = new LedgerTransaction
-            {
-                OwnerId = ownerId,
-                Date = date,
-                Type = type,
-                AccountId = accounts[account].Id,
-                CounterpartyAccountId = other is null ? null : accounts[other].Id,
-                AmountMinor = amount,
-                FeeMinor = fee,
-                Currency = Currency.Ngn,
-                CategoryId = category is null ? null : categories[category].Id,
-                EnvelopeId = env is null ? null : envelopes[env].Id,
-                BusinessId = business ? businessId : null,
-                Description = description,
-                Notes = notes,
-                IsBusiness = business,
-                IsTransfer = transfer
-            };
-
-            tx.Postings.Add(new Posting
-            {
-                AccountId = accounts[account].Id,
-                AmountMinor = signedForAccount,
-                Currency = Currency.Ngn,
-                Role = "primary"
-            });
-
-            if (fee > 0)
-            {
-                tx.Postings.Add(new Posting
-                {
-                    AccountId = accounts[account].Id,
-                    AmountMinor = -fee,
-                    Currency = Currency.Ngn,
-                    Role = "fee"
-                });
-            }
-
-            if (transfer && other is not null && inflow == 0)
-            {
-                tx.Postings.Add(new Posting
-                {
-                    AccountId = accounts[other].Id,
-                    AmountMinor = amount,
-                    Currency = Currency.Ngn,
-                    Role = "counterparty"
-                });
-            }
-
-            db.Transactions.Add(tx);
-        }
-
-        Tx(new(2026, 9, 25), "stanbic", TransactionType.Income, "salary", "Main salary", 54_300_000, 0, 0, false, null);
-        Tx(new(2026, 9, 25), "stanbic", TransactionType.Transfer, "transfer", "Move funds from Stanbic to Opay", 0, 30_000_000, 2_500, true, null, "opay");
-        Tx(new(2026, 9, 26), "stanbic", TransactionType.Expense, "irregular-giving", "Bought books for Silver", 0, 450_000, 700, false, null, env: "irregular-giving");
-        Tx(new(2026, 9, 26), "stanbic", TransactionType.Expense, "data-airtime", "Mifi subscription for MTN", 0, 3_000_000, 0, false, null, env: "data-airtime");
-        Tx(new(2026, 9, 26), "opay", TransactionType.Expense, "food", "Bought Snacks", 0, 260_000, 0, false, null, env: "food");
-        Tx(new(2026, 9, 26), "opay", TransactionType.Expense, "family", "Bought Eggs for the house", 0, 540_000, 0, false, null, env: "family");
     }
 }

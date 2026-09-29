@@ -266,10 +266,10 @@ public static class HousingProjection
 {
     public sealed record Result(
         long? ConfirmedHousingMinor,
-        long LastKnownHomeSavingsMinor,
+        long? LastKnownHomeSavingsMinor,
         long FutureSecondaryHousingMinor,
         long FutureHomeContributionMinor,
-        long ExpectedRotatingPayoutMinor,
+        long? ExpectedRotatingPayoutMinor,
         DateOnly? ProjectedMoveDate,
         bool ProjectedDateIsEstimate,
         string Sentence,
@@ -277,11 +277,11 @@ public static class HousingProjection
 
     public static Result Project(
         long? confirmedPiggyVestMinor,
-        long lastKnownHomeSavingsMinor,
+        long? lastKnownHomeSavingsMinor,
         int remainingContributionMonths,
         long secondaryHousingMonthlyMinor,
         long homeContributionMonthlyMinor,
-        long expectedRotatingPayoutMinor,
+        long? expectedRotatingPayoutMinor,
         long targetMinor,
         DateOnly today)
     {
@@ -290,15 +290,19 @@ public static class HousingProjection
             new("Confirmed PiggyVest / housing vault", confirmedPiggyVestMinor, Currency.Ngn,
                 confirmedPiggyVestMinor is null ? Provenance.Unknown : Provenance.Confirmed,
                 confirmedPiggyVestMinor is null ? "UNKNOWN. Enter the current PiggyVest housing balance." : null),
-            new("Cowrywise Home Savings (last known)", lastKnownHomeSavingsMinor, Currency.Ngn, Provenance.LastKnown,
-                "Verify before treating this as move capital."),
+            new("Cowrywise Home Savings", lastKnownHomeSavingsMinor, Currency.Ngn,
+                lastKnownHomeSavingsMinor is null ? Provenance.Unknown : Provenance.LastKnown,
+                lastKnownHomeSavingsMinor is null ? "UNKNOWN. Enter the current home savings figure." : "Verify before treating this as move capital."),
             new("Future secondary-income housing contributions",
                 secondaryHousingMonthlyMinor * remainingContributionMonths, Currency.Ngn, Provenance.Plan,
                 $"{Money.FromMajor(secondaryHousingMonthlyMinor / 100m, Currency.Ngn)} × {remainingContributionMonths} months. Not double-counted with the rotating payout."),
             new("Future Home Savings contributions",
                 homeContributionMonthlyMinor * remainingContributionMonths, Currency.Ngn, Provenance.Plan, null),
-            new("Expected rotating-savings payout", expectedRotatingPayoutMinor, Currency.Ngn, Provenance.Expected,
-                "This is the same pool as the ₦100,000 monthly rotating contribution. The monthly ₦100,000 is not added on top of this payout.")
+            new("Expected rotating-savings payout", expectedRotatingPayoutMinor, Currency.Ngn,
+                expectedRotatingPayoutMinor is null ? Provenance.Unknown : Provenance.Expected,
+                expectedRotatingPayoutMinor is null
+                    ? "UNKNOWN. Enter the expected payout when you know it. Same pool as the ₦100,000 monthly rotating contribution."
+                    : "This is the same pool as the ₦100,000 monthly rotating contribution. The monthly ₦100,000 is not added on top of this payout.")
         };
 
         if (confirmedPiggyVestMinor is null)
@@ -315,14 +319,20 @@ public static class HousingProjection
                 lines);
         }
 
-        var knownNow = confirmedPiggyVestMinor.Value + lastKnownHomeSavingsMinor;
+        var homeNow = lastKnownHomeSavingsMinor ?? 0;
+        var rotating = expectedRotatingPayoutMinor ?? 0;
+        var knownNow = confirmedPiggyVestMinor.Value + homeNow;
         var monthly = secondaryHousingMonthlyMinor + homeContributionMonthlyMinor;
-        var remaining = targetMinor - knownNow - expectedRotatingPayoutMinor;
+        var remaining = targetMinor - knownNow - rotating;
         DateOnly? date = null;
         var estimate = false;
         string sentence;
 
-        if (remaining <= 0)
+        if (lastKnownHomeSavingsMinor is null || expectedRotatingPayoutMinor is null)
+        {
+            sentence = "Projected move date stays UNKNOWN until home savings and the expected rotating payout are entered. Confirmed PiggyVest is recorded; missing figures are not invented.";
+        }
+        else if (remaining <= 0)
         {
             sentence = "Housing capital plus the expected rotating payout covers the ₦3,000,000 target.";
         }
@@ -336,7 +346,7 @@ public static class HousingProjection
             date = today.AddMonths(months);
             estimate = true;
             sentence =
-                $"ESTIMATE: at the planned housing contributions, the remaining {Money.FromMajor(remaining / 100m, Currency.Ngn)} takes about {months} month(s), around {date:MMMM yyyy}. This uses last-known home savings and an EXPECTED rotating payout. It is not a promise.";
+                $"ESTIMATE: at the planned housing contributions, the remaining {Money.FromMajor(remaining / 100m, Currency.Ngn)} takes about {months} month(s), around {date:MMMM yyyy}. This uses entered home savings and an EXPECTED rotating payout. It is not a promise.";
         }
 
         return new Result(

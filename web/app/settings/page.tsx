@@ -65,7 +65,7 @@ export default function SettingsPage() {
     setBusy("delete");
     try {
       await api.deleteAll();
-      setMessage("Data reset to the plan snapshot.");
+      setMessage("Entered figures cleared. The plan (accounts, jobs, allocation lines) is kept.");
     } catch (err) {
       setError(failMessage(err));
     } finally {
@@ -76,7 +76,7 @@ export default function SettingsPage() {
   return (
     <Shell>
       <h1>Settings</h1>
-      <p className="lede">Allowance, alerts, export, and a reset back to the plan snapshot.</p>
+      <p className="lede">Allowance, alerts, export, and clearing entered figures while keeping the plan.</p>
       {message && <p className="sentence">{message}</p>}
       {error && <p className="error">{error}</p>}
 
@@ -124,8 +124,9 @@ export default function SettingsPage() {
         </form>
       </Card>
 
-      <Card title="Delete and reseed">
-        <button className="btn warn" disabled={busy === "delete"} onClick={() => void resetLedger()}>Delete my ledger and restore the plan snapshot</button>
+      <Card title="Clear entered figures">
+        <button className="btn warn" disabled={busy === "delete"} onClick={() => void resetLedger()}>Clear entered figures and keep the plan</button>
+        <p className="lede">Removes balances, holdings, transactions, and FX you entered. Accounts, jobs, and allocation plan lines stay. You fill the figures again.</p>
       </Card>
     </Shell>
   );

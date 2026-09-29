@@ -543,7 +543,7 @@ public sealed class FinanceOsService(FinanceDbContext db, IPasswordHasher<Owner>
             Node("mmf-node", "MMF", "goal", mmf, "Medium-term liquid wealth.", "When the purpose is wealth, not spending.", "Breaking it for lifestyle is an investment-rule violation.", []),
             Node("children-node", "Children", "goal", children, "Long-term child fund.", "Leave untouched.", "Spending it now steals from a locked 18-year purpose.", []),
             Node("home-node", "Home savings", "goal", home, "Existing home fund.", "Toward the move, then re-purpose.", "Spending it on daily costs delays housing.", []),
-            Node("rotating-node", "Rotating savings", "expected", MoneyDto.Of(120_000_000, Currency.Ngn, Provenance.Expected), "Expected ~₦1.2m payout. Same pool as ₦100k/month.", "When the payout is received.", "Spending the monthly contribution as lifestyle removes move capital.", []),
+            Node("rotating-node", "Rotating savings", "expected", MoneyDto.Unknown("Enter the expected rotating payout when you know it. Same pool as ₦100k/month."), "Expected payout. Same pool as ₦100k/month.", "When the payout is received.", "Spending the monthly contribution as lifestyle removes move capital.", []),
             Node("reserve-node", "Operating reserve", "buffer", MoneyDto.Of(2_600_000, Currency.Ngn, Provenance.Plan), "Timing and small surprises.", "When a planned bill and cash timing differ.", "Draining it for lifestyle removes the buffer.", []),
             Node("secondary", "₦400k Secondary", "income", MoneyDto.Of(40_000_000, Currency.Ngn, Provenance.Plan), "Strategic, less reliable income.", "Around the 12th.", "Building lifestyle on it creates dependence on uncertain income.", ["kuda-node"]),
             Node("kuda-node", "Kuda", "account", kuda, "Secondary-income holding.", "Waterfall day.", "Sending the whole ₦400k to Stanbic mixes strategic money into lifestyle.", ["risevest-node", "bamboo-node", "housing-node", "irregular-node", "wealth-node"]),
@@ -627,7 +627,10 @@ public sealed class FinanceOsService(FinanceDbContext db, IPasswordHasher<Owner>
         var owner = await RequireOwner(ct);
         var rows = await db.Holdings.Where(h => h.OwnerId == owner.Id).OrderBy(h => h.Name).ToListAsync(ct);
         return rows.Select(h => new HoldingDto(
-            h.Id, h.Name, MoneyDto.Of(h.AmountMinor, h.Currency, h.Provenance, h.AsOf),
+            h.Id, h.Name,
+            h.Provenance == Provenance.Unknown
+                ? MoneyDto.Unknown(h.StatusNote, h.Currency)
+                : MoneyDto.Of(h.AmountMinor, h.Currency, h.Provenance, h.AsOf),
             h.Liquidity, h.Purpose, h.StatusNote, h.IsExpectedReceivable)).ToList();
     }
 
@@ -1524,6 +1527,11 @@ public sealed class FinanceOsService(FinanceDbContext db, IPasswordHasher<Owner>
 
         foreach (var holding in holdings)
         {
+            if (holding.Provenance == Provenance.Unknown)
+            {
+                continue;
+            }
+
             items.Add((holding.Name, holding.AmountMinor, holding.Currency, holding.Provenance, holding.IncludeInNetWorth, holding.IsExpectedReceivable, false));
         }
 
@@ -1619,8 +1627,9 @@ public sealed class FinanceOsService(FinanceDbContext db, IPasswordHasher<Owner>
     private async Task<MoneyDto> HoldingMoneyAsync(Guid ownerId, string slug, CancellationToken ct)
     {
         var holding = await db.Holdings.SingleOrDefaultAsync(h => h.OwnerId == ownerId && h.Slug == slug, ct);
-        return holding is null
-            ? MoneyDto.Unknown($"No {slug} holding has been recorded.")
+        if (holding is null) return MoneyDto.Unknown($"No {slug} holding has been recorded.");
+        return holding.Provenance == Provenance.Unknown
+            ? MoneyDto.Unknown(holding.StatusNote, holding.Currency)
             : MoneyDto.Of(holding.AmountMinor, holding.Currency, holding.Provenance, holding.AsOf);
     }
 
@@ -1630,13 +1639,16 @@ public sealed class FinanceOsService(FinanceDbContext db, IPasswordHasher<Owner>
         var piggySnap = await LatestSnapshotAsync(piggy.Id, ct);
         long? confirmedPiggy = piggySnap is { Provenance: Provenance.Confirmed } ? piggySnap.AmountMinor : null;
         var home = await db.Holdings.SingleAsync(h => h.OwnerId == owner.Id && h.Slug == "home", ct);
+        long? homeMinor = home.Provenance == Provenance.Unknown ? null : home.AmountMinor;
+        var rotating = await db.Holdings.SingleOrDefaultAsync(h => h.OwnerId == owner.Id && h.Slug == "rotating", ct);
+        long? rotatingMinor = rotating is null || rotating.Provenance == Provenance.Unknown ? null : rotating.AmountMinor;
         var projection = HousingProjection.Project(
-            confirmedPiggy, home.AmountMinor, 5, 25_000_000, 500_000, 120_000_000, 300_000_000, MoneyMapping.Today());
+            confirmedPiggy, homeMinor, 5, 25_000_000, 500_000, rotatingMinor, 300_000_000, MoneyMapping.Today());
         var amount = confirmedPiggy is null
             ? MoneyDto.Unknown("Enter the current PiggyVest housing balance.")
             : MoneyDto.Of(confirmedPiggy.Value, Currency.Ngn, Provenance.Confirmed);
         var explain = new ExplainDto("housing-gap", projection.Sentence,
-            "Confirmed housing vault + last-known home savings + future planned housing contributions + expected rotating payout. Monthly rotating ₦100k is the same pool as the expected payout and is not added twice.",
+            "Confirmed housing vault + entered home savings + future planned housing contributions + expected rotating payout. Monthly rotating ₦100k is the same pool as the expected payout and is not added twice.",
             projection.Lines.Select(MoneyMapping.Line).ToList(), amount);
         return (amount, projection.Sentence, explain);
     }
