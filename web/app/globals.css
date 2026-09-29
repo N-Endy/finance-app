@@ -152,14 +152,21 @@ label { font-size: 13px; color: var(--muted); display: block; margin-bottom: 6px
   }
   .bottom-nav a, .bottom-nav button {
     flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
     min-height: 48px;
-    min-width: 48px;
+    min-width: 0;
+    margin: 0;
+    appearance: none;
+    -webkit-appearance: none;
     border: 0;
     background: transparent;
     color: var(--ink);
-    font-size: 11px;
+    font-size: clamp(10px, 2.8vw, 12px);
     line-height: 1.2;
     text-align: center;
+    white-space: nowrap;
     padding: 8px 4px;
     border-radius: 8px;
   }
@@ -186,6 +193,14 @@ label { font-size: 13px; color: var(--muted); display: block; margin-bottom: 6px
     display: grid;
     gap: 4px;
   }
+  .more-sheet .group {
+    color: var(--muted);
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    margin: 16px 0 4px;
+  }
+  .more-sheet .group:first-of-type { margin-top: 4px; }
   .more-sheet a {
     display: flex;
     align-items: center;

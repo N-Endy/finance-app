@@ -40,7 +40,7 @@ public class ApiFlowTests : IClassFixture<WebApplicationFactory<Program>>
         var dashboard = await client.GetFromJsonAsync<DashboardDto>("/api/v1/dashboard");
         Assert.NotNull(dashboard);
         Assert.Equal("UNKNOWN", dashboard!.NetWorth.Formatted);
-        Assert.Contains("UNKNOWN", dashboard.SpendableSentence + dashboard.HousingSentence + string.Join(' ', dashboard.Unknowns));
+        Assert.Contains("UNKNOWN", dashboard.SpendableSentence + dashboard.HousingSentence + string.Join(' ', dashboard.Unknowns.Select(u => u.Text)));
 
         var explain = await client.GetFromJsonAsync<ExplainDto>("/api/v1/explain/net-worth");
         Assert.NotNull(explain);

@@ -4,7 +4,7 @@ import { FormEvent, useEffect, useState } from "react";
 import { Shell, Card, Reveal } from "@/components/ui";
 import { api } from "@/lib/api";
 import { failMessage } from "@/lib/feedback";
-import type { AllocationLine, BudgetItem, CalendarItem, FamilyRow, IncomePreview } from "@/lib/types";
+import type { AllocationLine, BudgetItem, CalendarItem, FamilyRow, IncomePreview, Rule } from "@/lib/types";
 
 function major(value: number | null | undefined) {
   return value == null ? "" : String(value);
@@ -15,6 +15,7 @@ export default function BudgetPage() {
   const [salary, setSalary] = useState<AllocationLine[]>([]);
   const [family, setFamily] = useState<FamilyRow[]>([]);
   const [calendar, setCalendar] = useState<CalendarItem[]>([]);
+  const [rules, setRules] = useState<Rule[]>([]);
   const [preview, setPreview] = useState<IncomePreview | null>(null);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [familyDrafts, setFamilyDrafts] = useState<Record<string, string>>({});
@@ -25,16 +26,18 @@ export default function BudgetPage() {
   const date = today.toISOString().slice(0, 10);
 
   async function load() {
-    const [budgetItems, salaryLines, familyRows, calendarItems] = await Promise.all([
+    const [budgetItems, salaryLines, familyRows, calendarItems, planRules] = await Promise.all([
       api.budget(),
       api.plan("salary"),
       api.family(),
-      api.calendar(today.getFullYear(), today.getMonth() + 1)
+      api.calendar(today.getFullYear(), today.getMonth() + 1),
+      api.rules()
     ]);
     setItems(budgetItems);
     setSalary(salaryLines);
     setFamily(familyRows);
     setCalendar(calendarItems);
+    setRules(planRules);
     setDrafts(Object.fromEntries(budgetItems.filter((item) => item.category !== "Betting").map((item) => [item.category, major(item.budget.major)])));
     setFamilyDrafts(Object.fromEntries(familyRows.filter((row) => row.kind === "Recurring").map((row) => [row.id, major(row.amount.major)])));
   }
@@ -175,6 +178,10 @@ export default function BudgetPage() {
         {calendar.map((item) => (
           <p key={item.date + item.title}>{item.date} — {item.title} {item.amount?.formatted ?? ""}</p>
         ))}
+      </Card>
+
+      <Card title="Rules">
+        {rules.map((rule) => <p key={rule.id}><strong>{rule.title}.</strong> {rule.action} {rule.control}</p>)}
       </Card>
     </Shell>
   );

@@ -26,7 +26,9 @@ export default function HomePage() {
 
       {data.unknowns.length > 0 && (
         <Card title="Still to enter">
-          <ul>{data.unknowns.map((item) => <li key={item}>{item}</li>)}</ul>
+          <ul>{data.unknowns.map((item) => (
+            <li key={item.href + item.text}><Link href={item.href}>{item.text}</Link></li>
+          ))}</ul>
         </Card>
       )}
 

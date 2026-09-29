@@ -7,7 +7,7 @@ import type { Money } from "@/lib/types";
 import { api } from "@/lib/api";
 
 const nav = [
-  { group: "Position", items: [["/", "Home"], ["/today", "Today"], ["/money", "Money"], ["/transactions", "Transactions"]] as const },
+  { group: "Position", items: [["/", "Home"], ["/today", "Today"], ["/money", "Map"], ["/transactions", "Transactions"]] as const },
   { group: "Plan", items: [["/goals", "Goals"], ["/budget", "Budget"], ["/accounts", "Accounts"]] as const },
   { group: "Wealth", items: [["/investments", "Investments"], ["/business", "Business"]] as const },
   { group: "Review", items: [["/reports", "Reports"], ["/settings", "Settings"]] as const }
@@ -16,19 +16,11 @@ const nav = [
 const tabs = [
   ["/", "Home"],
   ["/today", "Today"],
-  ["/money", "Money"],
+  ["/money", "Map"],
   ["/transactions", "Transactions"]
 ] as const;
 
-const moreLinks = [
-  ["/goals", "Goals"],
-  ["/budget", "Budget"],
-  ["/accounts", "Accounts"],
-  ["/investments", "Investments"],
-  ["/business", "Business"],
-  ["/reports", "Reports"],
-  ["/settings", "Settings"]
-] as const;
+const moreGroups = nav.filter((group) => group.group !== "Position");
 
 function isActive(path: string, href: string) {
   return path === href;
@@ -37,7 +29,7 @@ function isActive(path: string, href: string) {
 export function Shell({ children }: { children: React.ReactNode }) {
   const path = usePathname();
   const [moreOpen, setMoreOpen] = useState(false);
-  const moreActive = moreLinks.some(([href]) => path === href);
+  const moreActive = moreGroups.some((group) => group.items.some(([href]) => path === href));
 
   return (
     <div className="app-shell">
@@ -75,10 +67,15 @@ export function Shell({ children }: { children: React.ReactNode }) {
         <div className="more-backdrop" onClick={() => setMoreOpen(false)}>
           <div className="more-sheet" role="dialog" aria-label="More screens" onClick={(event) => event.stopPropagation()}>
             <p className="lede">More</p>
-            {moreLinks.map(([href, label]) => (
-              <Link key={href} href={href} className={isActive(path, href) ? "active" : ""} onClick={() => setMoreOpen(false)}>
-                {label}
-              </Link>
+            {moreGroups.map((group) => (
+              <div key={group.group}>
+                <div className="group">{group.group}</div>
+                {group.items.map(([href, label]) => (
+                  <Link key={href} href={href} className={isActive(path, href) ? "active" : ""} onClick={() => setMoreOpen(false)}>
+                    {label}
+                  </Link>
+                ))}
+              </div>
             ))}
           </div>
         </div>

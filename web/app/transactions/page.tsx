@@ -16,6 +16,7 @@ export default function TransactionsPage() {
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [showDetail, setShowDetail] = useState(false);
+  const [csv, setCsv] = useState("Date,Account,Type,Category,Description,Amount,Fee,Currency\n");
   const [detail, setDetail] = useState({ date: new Date().toISOString().slice(0, 10), type: "Expense", accountId: "", counterpartyAccountId: "", amount: "", description: "" });
 
   async function load() {
@@ -96,6 +97,22 @@ export default function TransactionsPage() {
     }
   }
 
+  async function importCsv(event: FormEvent) {
+    event.preventDefault();
+    setError(null);
+    setMessage(null);
+    setBusy("import");
+    try {
+      const result = await api.importCsv(csv);
+      await load();
+      setMessage(`Imported ${result.imported} rows.`);
+    } catch (err) {
+      setError(failMessage(err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
   return (
     <Shell>
       <h1>Where did my money go?</h1>
@@ -138,6 +155,13 @@ export default function TransactionsPage() {
       )}
 
       <AskLedger />
+
+      <Card title="CSV import">
+        <form className="stack" onSubmit={importCsv}>
+          <textarea rows={6} value={csv} onChange={(e) => setCsv(e.target.value)} />
+          <button className="btn" type="submit" disabled={busy === "import"}>Import CSV</button>
+        </form>
+      </Card>
 
       {preview && (
         <Reveal watch={preview.summary}>

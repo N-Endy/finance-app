@@ -49,7 +49,7 @@ export type Dashboard = {
     familySupport: Money; careerBusiness: Money; betting: Money; transfers: Money;
   };
   actionRequired: string[];
-  unknowns: string[];
+  unknowns: { text: string; href: string }[];
 };
 
 export type Explain = { metric: string; sentence: string; formula: string; lines: { label: string; amount: Money; note?: string | null }[]; result: Money };

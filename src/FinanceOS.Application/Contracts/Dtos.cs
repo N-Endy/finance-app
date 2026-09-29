@@ -116,7 +116,9 @@ public sealed record DashboardDto(
     string SpendableSentence,
     ThisMonthDto ThisMonth,
     IReadOnlyList<string> ActionRequired,
-    IReadOnlyList<string> Unknowns);
+    IReadOnlyList<UnknownFactDto> Unknowns);
+
+public sealed record UnknownFactDto(string Text, string Href);
 
 public sealed record ThisMonthDto(
     MoneyDto Income,

@@ -1717,28 +1717,28 @@ public sealed class FinanceOsService(FinanceDbContext db, IPasswordHasher<Owner>
             : MoneyDto.Of(holding.AmountMinor, holding.Currency, holding.Provenance, holding.AsOf);
     }
 
-    private async Task<List<string>> UnknownFactsAsync(Owner owner, CancellationToken ct)
+    private async Task<List<UnknownFactDto>> UnknownFactsAsync(Owner owner, CancellationToken ct)
     {
-        var needed = new List<string>();
+        var needed = new List<UnknownFactDto>();
         foreach (var slug in new[] { "stanbic", "piggyvest-housing", "access" })
         {
             var account = await db.Accounts.SingleAsync(a => a.OwnerId == owner.Id && a.Slug == slug, ct);
             var snap = await LatestSnapshotAsync(account.Id, ct);
             if (snap is null || snap.Provenance != Provenance.Confirmed)
             {
-                needed.Add($"Enter a confirmed {account.Name} balance.");
+                needed.Add(new UnknownFactDto($"Enter a confirmed {account.Name} balance.", "/accounts"));
             }
         }
 
         if (!await db.ExchangeRates.AnyAsync(r => r.OwnerId == owner.Id, ct))
         {
-            needed.Add("USD holdings stay in dollars until you enter an FX rate.");
+            needed.Add(new UnknownFactDto("USD holdings stay in dollars until you enter an FX rate.", "/investments"));
         }
 
         var pension = await db.Pensions.SingleAsync(p => p.OwnerId == owner.Id, ct);
         if (pension.CurrentBalanceMinor is null)
         {
-            needed.Add("RSA / pension balance is UNKNOWN.");
+            needed.Add(new UnknownFactDto("RSA / pension balance is UNKNOWN.", "/investments"));
         }
 
         return needed;

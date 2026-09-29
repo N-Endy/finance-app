@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { Shell, Card } from "@/components/ui";
 import { api } from "@/lib/api";
 import { failMessage } from "@/lib/feedback";
-import type { ActionItem } from "@/lib/types";
+import type { ActionItem, AlertItem, Violation } from "@/lib/types";
 
 const confirmation = {
   complete: "Marked as done.",
@@ -14,12 +14,25 @@ const confirmation = {
 
 export default function TodayPage() {
   const [items, setItems] = useState<ActionItem[]>([]);
+  const [alerts, setAlerts] = useState<AlertItem[]>([]);
+  const [violations, setViolations] = useState<Violation[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
 
   async function load() {
-    try { setItems(await api.actions()); } catch (err) { setError(failMessage(err)); }
+    try {
+      const [actions, ranked, openViolations] = await Promise.all([
+        api.actions(),
+        api.alerts(),
+        api.violations()
+      ]);
+      setItems(actions);
+      setAlerts(ranked);
+      setViolations(openViolations);
+    } catch (err) {
+      setError(failMessage(err));
+    }
   }
   useEffect(() => { void load(); }, []);
 
@@ -38,12 +51,25 @@ export default function TodayPage() {
     }
   }
 
+  const openViolations = violations.filter((v) => v.isOpen);
+
   return (
     <Shell>
       <h1>What should I do today?</h1>
       <p className="lede">Today&apos;s recommended actions. Completing one records that you handled it.</p>
       {message && <p className="sentence">{message}</p>}
       {error && <p className="error">{error}</p>}
+
+      <Card title="Alerts, ranked">
+        {alerts.map((alert) => <p key={alert.message}><strong>{alert.priority}.</strong> {alert.message}</p>)}
+        {alerts.length === 0 && <p>No ranked alerts right now.</p>}
+      </Card>
+
+      <Card title="Open violations">
+        {openViolations.map((v) => <p key={v.id}>{v.date} · {v.rule}: {v.message}</p>)}
+        {openViolations.length === 0 && <p>No open violations.</p>}
+      </Card>
+
       <div className="stack">
         {items.map((item) => (
           <Card key={item.id} title={item.title}>
