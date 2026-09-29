@@ -227,6 +227,18 @@ public sealed class FinanceController(FinanceOsService finance) : ControllerBase
         return Ok();
     }
 
+    [HttpPost("businesses/{slug}/transactions")]
+    public Task<BusinessDto> LogBusinessTransaction(string slug, [FromBody] BusinessTransactionRequest request, CancellationToken ct) =>
+        finance.LogBusinessTransactionAsync(slug, request, ct);
+
+    [HttpPut("businesses/{slug}/baseline-line")]
+    public Task<BusinessDto> UpdateBusinessBaselineLine(string slug, [FromBody] BusinessBaselineLineRequest request, CancellationToken ct) =>
+        finance.UpdateBusinessBaselineLineAsync(slug, request, ct);
+
+    [HttpPut("businesses/{slug}/baseline")]
+    public Task<BusinessDto> UpdateBusinessBaseline(string slug, [FromBody] List<BusinessBaselineLineRequest> request, CancellationToken ct) =>
+        finance.UpdateBusinessBaselineAsync(slug, request, ct);
+
     [HttpGet("business/matchpredictor")]
     public Task<BusinessDto> Business(CancellationToken ct) => finance.BusinessAsync(ct);
 

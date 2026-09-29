@@ -47,13 +47,19 @@ main { padding: 32px 40px 64px; max-width: 1100px; }
 .grid.four { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@media (min-width: 901px) and (max-width: 1250px) {
+  .grid.four { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
 .card {
   background: var(--card);
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 20px;
+  min-width: 0;
+  overflow: hidden;
+  word-break: break-word;
 }
-.card h3 { margin: 0 0 8px; font-size: 12px; color: var(--muted); font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; font-family: var(--font-body), system-ui, sans-serif; }
+.card h3 { margin: 0 0 8px; font-size: 12px; color: var(--muted); font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; font-family: var(--font-body), system-ui, sans-serif; overflow-wrap: break-word; }
 button.card {
   display: block;
   width: 100%;
@@ -62,15 +68,29 @@ button.card {
   appearance: none;
   min-height: 44px;
   cursor: pointer;
+  min-width: 0;
+  overflow: hidden;
+  word-break: break-word;
 }
 .figure {
   font-size: 28px;
   margin: 4px 0 8px;
   font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
-.figure.large { font-size: 40px; }
-.sentence { margin: 0; color: var(--ink); line-height: 1.5; }
-.badge { display: inline-block; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; padding: 4px 8px; border-radius: 4px; border: 1px solid var(--line); color: var(--muted); margin-right: 6px; }
+.figure.large {
+  font-size: clamp(24px, 2.2vw, 36px);
+  line-height: 1.15;
+}
+.sentence {
+  margin: 0;
+  color: var(--ink);
+  line-height: 1.5;
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+.badge { display: inline-block; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; padding: 4px 8px; border-radius: 4px; border: 1px solid var(--line); color: var(--muted); margin-right: 6px; margin-bottom: 4px; max-width: 100%; overflow-wrap: anywhere; }
 .badge.unknown { color: var(--unknown); }
 .badge.confirmed { color: var(--accent); border-color: #1a5c3c; }
 .badge.last_known, .badge.plan, .badge.expected, .badge.estimate { color: var(--watch); border-color: #5c4a22; }

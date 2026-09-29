@@ -905,19 +905,75 @@ public sealed class FinanceOsService(
             .ToListAsync(ct);
         var revenue = txs.Where(t => t.Type == TransactionType.BusinessRevenue).Sum(t => t.AmountMinor);
         var expenses = txs.Where(t => t.Type is TransactionType.BusinessExpense or TransactionType.Expense).Sum(t => t.AmountMinor);
-        var groups = txs.Where(t => t.Type != TransactionType.BusinessRevenue)
-            .GroupBy(t => t.Category?.Name ?? "Other")
-            .Select(g => new BusinessLineDto(g.Key, MoneyDto.Of(g.Sum(x => x.AmountMinor), Currency.Ngn, Provenance.Confirmed)))
-            .ToList();
 
-        if (groups.Count == 0 && business.Slug == "matchpredictor")
+        List<BusinessBaselineLineRequest> baselines = [];
+        if (!string.IsNullOrWhiteSpace(business.BaselineCostsJson))
         {
-            groups.Add(new BusinessLineDto("Hosting", MoneyDto.Unknown("Enter the actual Railway naira charge.")));
-            groups.Add(new BusinessLineDto("Domain", MoneyDto.Unknown("Enter the actual domain naira charge.")));
-            groups.Add(new BusinessLineDto("Database", MoneyDto.Estimate(1_500_000, Currency.Ngn, "Workbook listed Neon at ₦15,000 as a plan estimate.")));
-            groups.Add(new BusinessLineDto("AI / API", MoneyDto.Unknown("Enter the actual AI token naira charge.")));
-            groups.Add(new BusinessLineDto("Revenue", MoneyDto.Of(0, Currency.Ngn, Provenance.Confirmed, null)));
+            try
+            {
+                baselines = System.Text.Json.JsonSerializer.Deserialize<List<BusinessBaselineLineRequest>>(business.BaselineCostsJson) ?? [];
+            }
+            catch { }
         }
+
+        if (baselines.Count == 0 && business.Slug == "matchpredictor")
+        {
+            baselines.Add(new BusinessBaselineLineRequest("Hosting", 0, "NGN", "Unknown", "Enter the actual Railway naira charge."));
+            baselines.Add(new BusinessBaselineLineRequest("Domain", 0, "NGN", "Unknown", "Enter the actual domain naira charge."));
+            baselines.Add(new BusinessBaselineLineRequest("Database", 15000, "NGN", "Estimate", "Workbook listed Neon at ₦15,000 as a plan estimate."));
+            baselines.Add(new BusinessBaselineLineRequest("AI / API", 0, "NGN", "Unknown", "Enter the actual AI token naira charge."));
+        }
+
+        var lines = new List<BusinessLineDto>();
+        long baselineExpensesSum = 0;
+
+        var txGroups = txs.Where(t => t.Type != TransactionType.BusinessRevenue)
+            .GroupBy(t => t.Category?.Name ?? "Other")
+            .ToDictionary(g => g.Key, g => g.Sum(x => x.AmountMinor));
+
+        var processedCategories = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var b in baselines)
+        {
+            processedCategories.Add(b.Category);
+            if (txGroups.TryGetValue(b.Category, out var txSum))
+            {
+                lines.Add(new BusinessLineDto(b.Category, MoneyDto.Of(txSum, Currency.Ngn, Provenance.Confirmed)));
+            }
+            else
+            {
+                var minor = (long)(b.AmountMajor * 100m);
+                baselineExpensesSum += minor;
+                if (minor > 0)
+                {
+                    var prov = Enum.TryParse<Provenance>(b.Provenance, true, out var p) ? p : Provenance.Estimate;
+                    lines.Add(new BusinessLineDto(b.Category, MoneyDto.Of(minor, Currency.Ngn, prov, asOf: null, needed: b.Notes)));
+                }
+                else
+                {
+                    lines.Add(new BusinessLineDto(b.Category, MoneyDto.Unknown(b.Notes ?? $"Enter the actual {b.Category} naira charge.")));
+                }
+            }
+        }
+
+        foreach (var (cat, sum) in txGroups)
+        {
+            if (!processedCategories.Contains(cat))
+            {
+                lines.Add(new BusinessLineDto(cat, MoneyDto.Of(sum, Currency.Ngn, Provenance.Confirmed)));
+            }
+        }
+
+        var totalExpensesMinor = expenses > 0 ? expenses : baselineExpensesSum;
+        var expensesDto = expenses > 0
+            ? MoneyDto.Of(expenses, Currency.Ngn, Provenance.Confirmed)
+            : (baselineExpensesSum > 0
+                ? MoneyDto.Of(baselineExpensesSum, Currency.Ngn, Provenance.Estimate, asOf: null, needed: "Calculated from configured baseline costs.")
+                : MoneyDto.Unknown($"No confirmed {business.Name} expenses have been entered yet."));
+
+        var netMinor = revenue - totalExpensesMinor;
+        var netDto = expenses == 0 && revenue == 0 && baselineExpensesSum == 0
+            ? MoneyDto.Unknown("Net result is UNKNOWN until actual costs and revenue are entered.")
+            : MoneyDto.Of(netMinor, Currency.Ngn, expenses > 0 || revenue > 0 ? Provenance.Confirmed : Provenance.Estimate);
 
         return new BusinessDto(
             business.Id,
@@ -925,12 +981,137 @@ public sealed class FinanceOsService(
             business.Name,
             business.Description,
             MoneyDto.Of(revenue, Currency.Ngn, Provenance.Confirmed),
-            expenses == 0 ? MoneyDto.Unknown($"No confirmed {business.Name} expenses have been entered yet.") : MoneyDto.Of(expenses, Currency.Ngn, Provenance.Confirmed),
-            expenses == 0 && revenue == 0 ? MoneyDto.Unknown("Net result is UNKNOWN until actual costs and revenue are entered.") : MoneyDto.Of(revenue - expenses, Currency.Ngn, Provenance.Confirmed),
+            expensesDto,
+            netDto,
             business.ReinvestPercent,
             business.PersonalPercent,
             business.IsActive,
-            groups);
+            lines);
+    }
+
+    public async Task<BusinessDto> LogBusinessTransactionAsync(string slug, BusinessTransactionRequest request, CancellationToken ct)
+    {
+        var owner = await RequireOwner(ct);
+        var business = await db.Businesses.FirstOrDefaultAsync(b => b.OwnerId == owner.Id && b.Slug == slug, ct)
+                       ?? throw new DomainException($"Business '{slug}' was not found.");
+        var account = await db.Accounts.FirstOrDefaultAsync(a => a.OwnerId == owner.Id && a.Id == request.AccountId, ct)
+                      ?? throw new DomainException("Selected payment account does not exist.");
+
+        var currency = MoneyMapping.ParseCurrency(request.Currency);
+        var amount = Money.FromMajor(request.Amount, currency);
+        if (amount.MinorUnits <= 0) throw new DomainException("Transaction amount must be greater than zero.");
+
+        var isRevenue = request.Type.Equals("Revenue", StringComparison.OrdinalIgnoreCase) ||
+                        request.Type.Equals("BusinessRevenue", StringComparison.OrdinalIgnoreCase);
+        var txType = isRevenue ? TransactionType.BusinessRevenue : TransactionType.BusinessExpense;
+
+        var catName = string.IsNullOrWhiteSpace(request.Category) ? (isRevenue ? "Business Revenue" : "Business Expense") : request.Category.Trim();
+        var catSlug = $"biz-{slug}-{catName.ToLowerInvariant().Replace(" ", "-").Replace("/", "-")}";
+
+        var category = await db.Categories.FirstOrDefaultAsync(c => c.OwnerId == owner.Id && (c.Slug == catSlug || c.Name == catName), ct);
+        if (category is null)
+        {
+            category = new Category
+            {
+                OwnerId = owner.Id,
+                Slug = catSlug,
+                Name = catName,
+                IsBusiness = true
+            };
+            db.Categories.Add(category);
+        }
+
+        var description = string.IsNullOrWhiteSpace(request.Description)
+            ? $"{business.Name} {catName}"
+            : request.Description.Trim();
+
+        var tx = new LedgerTransaction
+        {
+            OwnerId = owner.Id,
+            Date = request.Date,
+            Type = txType,
+            AccountId = account.Id,
+            AmountMinor = amount.MinorUnits,
+            FeeMinor = 0,
+            Currency = currency,
+            CategoryId = category.Id,
+            BusinessId = business.Id,
+            Description = description,
+            Notes = request.Notes?.Trim(),
+            Tags = $"business,{slug},{catName.ToLowerInvariant()}",
+            IsBusiness = true,
+            IsTransfer = false,
+            CreatedAtUtc = DateTime.UtcNow
+        };
+
+        var signed = isRevenue ? amount.MinorUnits : -amount.MinorUnits;
+        tx.Postings.Add(new Posting
+        {
+            AccountId = account.Id,
+            AmountMinor = signed,
+            Currency = currency,
+            Role = "primary"
+        });
+
+        db.Transactions.Add(tx);
+        await AuditAsync(owner.Id, "create", "Transaction", tx.Id, $"Logged {txType} of {amount.Format()} for {business.Name}.", ct);
+        await db.SaveChangesAsync(ct);
+
+        return await CalculateBusinessDtoAsync(owner, business, ct);
+    }
+
+    public async Task<BusinessDto> UpdateBusinessBaselineLineAsync(string slug, BusinessBaselineLineRequest request, CancellationToken ct)
+    {
+        var owner = await RequireOwner(ct);
+        var business = await db.Businesses.FirstOrDefaultAsync(b => b.OwnerId == owner.Id && b.Slug == slug, ct)
+                       ?? throw new DomainException($"Business '{slug}' was not found.");
+
+        List<BusinessBaselineLineRequest> baselines = [];
+        if (!string.IsNullOrWhiteSpace(business.BaselineCostsJson))
+        {
+            try
+            {
+                baselines = System.Text.Json.JsonSerializer.Deserialize<List<BusinessBaselineLineRequest>>(business.BaselineCostsJson) ?? [];
+            }
+            catch { }
+        }
+
+        if (baselines.Count == 0 && business.Slug == "matchpredictor")
+        {
+            baselines.Add(new BusinessBaselineLineRequest("Hosting", 0, "NGN", "Unknown", "Enter the actual Railway naira charge."));
+            baselines.Add(new BusinessBaselineLineRequest("Domain", 0, "NGN", "Unknown", "Enter the actual domain naira charge."));
+            baselines.Add(new BusinessBaselineLineRequest("Database", 15000, "NGN", "Estimate", "Workbook listed Neon at ₦15,000 as a plan estimate."));
+            baselines.Add(new BusinessBaselineLineRequest("AI / API", 0, "NGN", "Unknown", "Enter the actual AI token naira charge."));
+        }
+
+        var idx = baselines.FindIndex(b => b.Category.Equals(request.Category, StringComparison.OrdinalIgnoreCase));
+        if (idx >= 0)
+        {
+            baselines[idx] = request;
+        }
+        else
+        {
+            baselines.Add(request);
+        }
+
+        business.BaselineCostsJson = System.Text.Json.JsonSerializer.Serialize(baselines);
+        await AuditAsync(owner.Id, "update", "BusinessBaseline", business.Id, $"Updated baseline cost for {business.Name} line {request.Category}.", ct);
+        await db.SaveChangesAsync(ct);
+
+        return await CalculateBusinessDtoAsync(owner, business, ct);
+    }
+
+    public async Task<BusinessDto> UpdateBusinessBaselineAsync(string slug, List<BusinessBaselineLineRequest> request, CancellationToken ct)
+    {
+        var owner = await RequireOwner(ct);
+        var business = await db.Businesses.FirstOrDefaultAsync(b => b.OwnerId == owner.Id && b.Slug == slug, ct)
+                       ?? throw new DomainException($"Business '{slug}' was not found.");
+
+        business.BaselineCostsJson = System.Text.Json.JsonSerializer.Serialize(request);
+        await AuditAsync(owner.Id, "update", "BusinessBaseline", business.Id, $"Updated all baseline costs for {business.Name}.", ct);
+        await db.SaveChangesAsync(ct);
+
+        return await CalculateBusinessDtoAsync(owner, business, ct);
     }
 
     public async Task UpdateBusinessSplitAsync(string slug, int reinvest, int personal, CancellationToken ct)

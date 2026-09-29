@@ -48,16 +48,16 @@ export default function HomePage() {
         <button className="card map-node" onClick={() => setMetric("spendable")}>
           <h3>Actually spendable</h3>
           <MoneyView money={data.spendable} large />
-          <p className="sentence">{data.spendableSentence}</p>
+          <p className="sentence" style={{ marginTop: 8 }}>{data.spendableSentence}</p>
         </button>
         <Card title="Emergency">
           <MoneyView money={data.emergencyFund} />
-          <p className="sentence">{data.emergencySentence}</p>
+          <p className="sentence" style={{ marginTop: 8 }}>{data.emergencySentence}</p>
         </Card>
         <button className="card map-node" onClick={() => setMetric("housing-gap")}>
           <h3>Housing</h3>
           <MoneyView money={data.housingFund} />
-          <p className="sentence">{data.housingSentence}</p>
+          <p className="sentence" style={{ marginTop: 8 }}>{data.housingSentence}</p>
         </button>
       </div>
 

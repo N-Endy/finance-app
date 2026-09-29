@@ -14,10 +14,10 @@ public sealed record MoneyDto(
     public string Currency => CurrencyCode;
     public string Provenance => ProvenanceLabel;
 
-    public static MoneyDto Of(long minor, Domain.Currency ccy, Domain.Provenance source, DateOnly? asOf = null) =>
+    public static MoneyDto Of(long minor, Domain.Currency ccy, Domain.Provenance source, DateOnly? asOf = null, string? needed = null) =>
         new(minor, minor / 100m, ccy.ToString().ToUpperInvariant(),
             Domain.Money.FromMajor(minor / 100m, ccy).Format(),
-            Snake(source), asOf, null);
+            Snake(source), asOf, needed);
 
     public static MoneyDto Unknown(string needed, Domain.Currency ccy = Domain.Currency.Ngn) =>
         new(null, null, ccy.ToString().ToUpperInvariant(), "UNKNOWN", "unknown", null, needed);
@@ -234,6 +234,21 @@ public sealed record CounterpartyLoanWriteRequest(
     DateOnly? ExpectedRepaymentDate,
     string? Notes);
 public sealed record BusinessLineDto(string Category, MoneyDto Amount);
+public sealed record BusinessTransactionRequest(
+    string Type,
+    string Category,
+    decimal Amount,
+    string Currency,
+    Guid AccountId,
+    DateOnly Date,
+    string? Description,
+    string? Notes);
+public sealed record BusinessBaselineLineRequest(
+    string Category,
+    decimal AmountMajor,
+    string Currency,
+    string? Provenance,
+    string? Notes);
 public sealed record RuleDto(Guid Id, string Code, string Title, string Action, string Control, bool IsActive);
 public sealed record ViolationDto(Guid Id, string Rule, string Message, DateOnly Date, bool IsOpen);
 public sealed record ReportDto(string Name, string Period, string Summary, IReadOnlyList<ExplainLineDto> Lines);

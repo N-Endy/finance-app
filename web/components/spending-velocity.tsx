@@ -34,7 +34,7 @@ export function SpendingVelocityWidget({ onLoaded }: { onLoaded?: (data: Spendin
   return (
     <Card title="Daily spending velocity">
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap", marginBottom: 12 }}>
-        <div>
+        <div style={{ minWidth: 0, flex: "1 1 240px" }}>
           <span style={{
             fontSize: "0.75rem",
             textTransform: "uppercase",

@@ -87,10 +87,12 @@ export function Shell({ children }: { children: React.ReactNode }) {
 export function MoneyView({ money, large }: { money: Money; large?: boolean }) {
   const provenance = money.provenance ?? money.provenanceLabel ?? "unknown";
   return (
-    <div>
+    <div style={{ minWidth: 0, width: "100%" }}>
       <div className={`figure${large ? " large" : ""}`}>{money.formatted}</div>
-      <span className={`badge ${provenance}`}>{provenance.replace("_", " ")}</span>
-      {money.asOf && <span className="badge">as of {money.asOf}</span>}
+      <div style={{ display: "flex", flexWrap: "wrap", gap: "4px", alignItems: "center" }}>
+        <span className={`badge ${provenance}`}>{provenance.replace("_", " ")}</span>
+        {money.asOf && <span className="badge">as of {money.asOf}</span>}
+      </div>
       {money.needed && <p className="sentence" style={{ marginTop: 8 }}>{money.needed}</p>}
     </div>
   );

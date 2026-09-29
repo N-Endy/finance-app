@@ -159,6 +159,7 @@ public sealed class Business
     public int ReinvestPercent { get; set; } = 70;
     public int PersonalPercent { get; set; } = 30;
     public bool IsActive { get; set; } = true;
+    public string? BaselineCostsJson { get; set; }
 }
 
 public sealed class Liability
