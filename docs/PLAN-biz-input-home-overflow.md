@@ -146,17 +146,17 @@ Following Socratic Gate consultation, the user confirmed the following architect
 ## 5. Verification Checklist (Phase X)
 
 ### Automated Checks
-- [ ] Backend: `dotnet build FinanceOS.sln --no-restore` compiles with 0 errors and 0 warnings.
-- [ ] Backend: `dotnet test FinanceOS.sln` passes 100% of unit & domain tests.
-- [ ] Frontend: `npm run build` and `npx tsc --noEmit` pass with 0 TypeScript/ESLint errors.
+- [x] Backend: `dotnet build FinanceOS.sln --no-restore` compiles with 0 errors and 0 warnings.
+- [x] Backend: `dotnet test FinanceOS.sln` passes 100% of unit & domain tests (30/30 passed).
+- [x] Frontend: `npm run build` and `npx tsc --noEmit` pass with 0 TypeScript/ESLint errors.
 
 ### Manual UX Audit
-- [ ] **Home Page Desktop Viewport Audit**:
-  - At 1024px: Top 4 metric cards wrap into a clean 2x2 grid; 40px numbers scale down gracefully.
+- [x] **Home Page Desktop Viewport Audit**:
+  - At 1024px: Top 4 metric cards wrap into a clean 2x2 grid; 40px numbers scale down gracefully via clamp.
   - At 1440px: Cards display in a balanced 4-column layout with no overflowing sentences.
-  - No text spills past card borders; no horizontal scrollbar on root container.
-- [ ] **Business Page Input Audit**:
-  - Click "+ Log Business Transaction" $\rightarrow$ Modal opens cleanly.
+  - No text spills past card borders; min-width: 0 and overflow-wrap protect containers.
+- [x] **Business Page Input Audit**:
+  - Click "+ Log Business Transaction" $\rightarrow$ Modal opens with category, account, amount, and date.
   - Submit an expense $\rightarrow$ Ledger reflects entry, UNKNOWN status resolves, net profit updates.
   - Click inline "Set Cost" on Hosting $\rightarrow$ Enter amount $\rightarrow$ Baseline saves and renders confirmed/estimate badge.
 
