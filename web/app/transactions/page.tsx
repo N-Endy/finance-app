@@ -40,6 +40,16 @@ export default function TransactionsPage() {
     description: ""
   });
 
+  // Edit transaction state
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editForm, setEditForm] = useState({
+    date: "",
+    type: "Expense",
+    accountId: "",
+    amount: "",
+    description: ""
+  });
+
   async function load() {
     const [txs, accs] = await Promise.all([
       api.transactions(),
@@ -136,6 +146,39 @@ export default function TransactionsPage() {
       await api.voidTx(id);
       await load();
       setMessage("Voided.");
+    } catch (err) {
+      setError(failMessage(err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  function startEdit(row: Transaction) {
+    setEditingId(row.id);
+    setEditForm({
+      date: row.date,
+      type: row.type,
+      accountId: row.accountId ?? accounts[0]?.id ?? "",
+      amount: row.amount.minor != null ? String(row.amount.minor / 100) : "",
+      description: row.description
+    });
+  }
+
+  async function saveEdit(id: string) {
+    setError(null);
+    setMessage(null);
+    setBusy(`edit-${id}`);
+    try {
+      await api.updateTx(id, {
+        date: editForm.date,
+        type: editForm.type,
+        accountId: editForm.accountId,
+        amount: Number(editForm.amount),
+        description: editForm.description
+      });
+      setEditingId(null);
+      await load();
+      setMessage("Transaction updated. Balances readjusted automatically.");
     } catch (err) {
       setError(failMessage(err));
     } finally {
@@ -518,17 +561,77 @@ export default function TransactionsPage() {
       )}
 
       <table className="table" style={{ marginTop: 24 }}>
-        <thead><tr><th>Date</th><th>Account</th><th>Type</th><th>Description</th><th>Amount</th><th></th></tr></thead>
+        <thead><tr><th>Date</th><th>Account</th><th>Type</th><th>Description</th><th>Amount</th><th>Actions</th></tr></thead>
         <tbody>
           {rows.map((row) => (
-            <tr key={row.id}>
-              <td>{row.date}</td>
-              <td>{row.accountName}</td>
-              <td>{row.type}{row.isTransfer ? " · transfer" : ""}{row.isBetting ? " · betting" : ""}</td>
-              <td>{row.description}</td>
-              <td>{row.amount.formatted}</td>
-              <td><button className="btn ghost" disabled={busy === row.id} onClick={() => void voidRow(row.id)}>Void</button></td>
-            </tr>
+            editingId === row.id ? (
+              <tr key={row.id} style={{ backgroundColor: "rgba(255, 255, 255, 0.05)" }}>
+                <td>
+                  <input
+                    type="date"
+                    value={editForm.date}
+                    onChange={(e) => setEditForm({ ...editForm, date: e.target.value })}
+                    style={{ width: "130px", padding: "4px" }}
+                  />
+                </td>
+                <td>
+                  <select
+                    value={editForm.accountId}
+                    onChange={(e) => setEditForm({ ...editForm, accountId: e.target.value })}
+                    style={{ padding: "4px" }}
+                  >
+                    {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+                  </select>
+                </td>
+                <td>
+                  <select
+                    value={editForm.type}
+                    onChange={(e) => setEditForm({ ...editForm, type: e.target.value })}
+                    style={{ padding: "4px" }}
+                  >
+                    {["Income", "Expense", "Fee", "Savings", "Investment", "Refund", "Withdrawal", "Deposit", "Adjustment", "BusinessExpense", "BusinessRevenue"].map((t) => (
+                      <option key={t}>{t}</option>
+                    ))}
+                  </select>
+                </td>
+                <td>
+                  <input
+                    value={editForm.description}
+                    onChange={(e) => setEditForm({ ...editForm, description: e.target.value })}
+                    style={{ width: "100%", padding: "4px" }}
+                  />
+                </td>
+                <td>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={editForm.amount}
+                    onChange={(e) => setEditForm({ ...editForm, amount: e.target.value })}
+                    style={{ width: "100px", padding: "4px" }}
+                  />
+                </td>
+                <td>
+                  <div style={{ display: "flex", gap: "6px" }}>
+                    <button className="btn" disabled={busy === `edit-${row.id}`} onClick={() => void saveEdit(row.id)}>Save</button>
+                    <button className="btn ghost" onClick={() => setEditingId(null)}>Cancel</button>
+                  </div>
+                </td>
+              </tr>
+            ) : (
+              <tr key={row.id}>
+                <td>{row.date}</td>
+                <td>{row.accountName}</td>
+                <td>{row.type}{row.isTransfer ? " · transfer" : ""}{row.isBetting ? " · betting" : ""}</td>
+                <td>{row.description}</td>
+                <td>{row.amount.formatted}</td>
+                <td>
+                  <div style={{ display: "flex", gap: "6px" }}>
+                    <button className="btn ghost" onClick={() => startEdit(row)}>Edit</button>
+                    <button className="btn ghost" disabled={busy === row.id} onClick={() => void voidRow(row.id)}>Void</button>
+                  </div>
+                </td>
+              </tr>
+            )
           ))}
         </tbody>
       </table>

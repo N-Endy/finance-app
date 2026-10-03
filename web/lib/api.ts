@@ -53,6 +53,7 @@ export const api = {
   transactions: (query = "") => request<Transaction[]>(`/api/v1/transactions${query}`),
   preview: (body: object) => request<Preview>("/api/v1/transactions/preview", { method: "POST", body: JSON.stringify(body) }),
   createTx: (body: object) => request("/api/v1/transactions", { method: "POST", body: JSON.stringify(body) }),
+  updateTx: (id: string, body: object) => request<Transaction>(`/api/v1/transactions/${id}`, { method: "PUT", body: JSON.stringify(body) }),
   voidTx: (id: string) => request(`/api/v1/transactions/${id}/void`, { method: "POST" }),
   plan: (source: string) => request<AllocationLine[]>(`/api/v1/allocation-plans/${source}`),
   incomePreview: (source: string, date: string) => request<IncomePreview>(`/api/v1/income-receipts/${source}/preview`, { method: "POST", body: JSON.stringify({ date }) }),

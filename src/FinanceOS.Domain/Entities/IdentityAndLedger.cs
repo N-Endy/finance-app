@@ -36,6 +36,9 @@ public sealed class FinancialAccount
     public string OperatingRule { get; set; } = string.Empty;
     public long? FloorMinor { get; set; }
     public long? CeilingMinor { get; set; }
+    public long? MonthlyAllowanceMinor { get; set; }
+    public int? BillingCycleDay { get; set; }
+    public long? CreditLimitMinor { get; set; }
     public bool AllowsDailySpending { get; set; }
     public bool IncludeInNetWorth { get; set; } = true;
     public bool IsActive { get; set; } = true;

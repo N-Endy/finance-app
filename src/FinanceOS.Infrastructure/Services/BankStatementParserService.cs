@@ -18,6 +18,8 @@ public interface IBankStatementParserService
 
 public sealed partial class BankStatementParserService(FinanceDbContext db) : IBankStatementParserService
 {
+    private sealed record HistoricalTx(DateOnly Date, long AmountMinor, string Description, string? Merchant, Guid AccountId, Guid? CategoryId);
+
     public async Task<StatementParseResultDto> ParseStatementAsync(
         Guid ownerId,
         StatementParseRequest request,
@@ -30,7 +32,7 @@ public sealed partial class BankStatementParserService(FinanceDbContext db) : IB
             .Where(t => t.OwnerId == ownerId && !t.IsVoided)
             .OrderByDescending(t => t.Date)
             .Take(1500)
-            .Select(t => new { t.Date, t.AmountMinor, t.Description, t.AccountId })
+            .Select(t => new HistoricalTx(t.Date, t.AmountMinor, t.Description, t.Merchant, t.AccountId, t.CategoryId))
             .ToListAsync(ct);
 
         var content = request.Content?.Trim() ?? string.Empty;
@@ -75,7 +77,7 @@ public sealed partial class BankStatementParserService(FinanceDbContext db) : IB
             var cols = SplitCsvLine(rawLine);
             if (cols.Length < 2) continue;
 
-            var draft = ParseRow(cols, colMap, format, defaultAccount, accounts, categories, i - headerIndex);
+            var draft = ParseRow(cols, colMap, format, defaultAccount, accounts, categories, existingTxs, i - headerIndex);
             if (draft is null) continue;
 
             // Check duplicate
@@ -197,6 +199,7 @@ public sealed partial class BankStatementParserService(FinanceDbContext db) : IB
         FinancialAccount? defaultAccount,
         List<FinancialAccount> accounts,
         List<Category> categories,
+        IReadOnlyList<HistoricalTx> history,
         int index)
     {
         if (cols.Length <= map.DateIndex) return null;
@@ -277,7 +280,7 @@ public sealed partial class BankStatementParserService(FinanceDbContext db) : IB
         // Auto-detect category
         var (category, needsReview) = isTransfer
             ? (null, false)
-            : DetectCategory(rawDesc, isIncome, categories);
+            : DetectCategory(rawDesc, isIncome, categories, history);
 
         var transactionType = isTransfer ? "Transfer" : (isIncome ? "Income" : "Expense");
 
@@ -339,7 +342,8 @@ public sealed partial class BankStatementParserService(FinanceDbContext db) : IB
     private static (Category? Category, bool NeedsReview) DetectCategory(
         string narration,
         bool isIncome,
-        List<Category> categories)
+        List<Category> categories,
+        IReadOnlyList<HistoricalTx> history)
     {
         var upper = narration.ToUpperInvariant();
 
@@ -389,6 +393,25 @@ public sealed partial class BankStatementParserService(FinanceDbContext db) : IB
         {
             var cat = categories.FirstOrDefault(c => c.Slug.Contains("subscription", StringComparison.OrdinalIgnoreCase) || c.Name.Contains("Subscription", StringComparison.OrdinalIgnoreCase));
             return (cat, cat is null);
+        }
+
+        // Historical merchant & narration memory lookup
+        if (history.Count > 0)
+        {
+            var matchedHistory = history.FirstOrDefault(h =>
+                h.CategoryId.HasValue &&
+                ((!string.IsNullOrWhiteSpace(h.Merchant) && h.Merchant.Length >= 3 && upper.Contains(h.Merchant.ToUpperInvariant())) ||
+                 (!string.IsNullOrWhiteSpace(h.Description) && h.Description.Length >= 4 &&
+                  (upper.Contains(h.Description.ToUpperInvariant()) || (upper.Length >= 4 && h.Description.ToUpperInvariant().Contains(upper))))));
+
+            if (matchedHistory?.CategoryId != null)
+            {
+                var matchedCat = categories.FirstOrDefault(c => c.Id == matchedHistory.CategoryId.Value);
+                if (matchedCat != null)
+                {
+                    return (matchedCat, false);
+                }
+            }
         }
 
         return (null, true);

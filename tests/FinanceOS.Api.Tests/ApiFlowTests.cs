@@ -143,4 +143,55 @@ public class ApiFlowTests : IClassFixture<WebApplicationFactory<Program>>
         var failed = await client.PostAsJsonAsync("/api/v1/auth/login", new LoginRequest("nobody@local", "wrong-password-here"));
         Assert.Equal(HttpStatusCode.BadRequest, failed.StatusCode);
     }
+
+    [Fact]
+    public async Task Transaction_realtime_balance_readjustment_lifecycle()
+    {
+        var client = await SignedInClient();
+        var accounts = await client.GetFromJsonAsync<AccountDto[]>("/api/v1/accounts");
+        var opay = Assert.Single(accounts!, a => a.Slug == "opay");
+
+        // 1. Enter confirmed snapshot of 100,000 NGN
+        var snapRes = await client.PostAsJsonAsync($"/api/v1/accounts/{opay.Id}/snapshots", new SnapshotRequest(
+            100_000m, "NGN", DateOnly.FromDateTime(DateTime.UtcNow.Date), "Confirmed", "Opening balance test", "manual"));
+        Assert.Equal(HttpStatusCode.OK, snapRes.StatusCode);
+
+        accounts = await client.GetFromJsonAsync<AccountDto[]>("/api/v1/accounts");
+        opay = Assert.Single(accounts!, a => a.Slug == "opay");
+        Assert.NotNull(opay.LatestBalance);
+        Assert.Equal(10_000_000, opay.LatestBalance!.Minor);
+
+        // 2. Create expense transaction of 15,000 NGN
+        var txRes = await client.PostAsJsonAsync("/api/v1/transactions", new TransactionWriteRequest(
+            DateOnly.FromDateTime(DateTime.UtcNow.Date), "Expense", opay.Id, null, 15_000m, 0m, "NGN", null, null, null, null, null,
+            "Groceries from store", "Supermarket", null, null, false, false));
+        Assert.Equal(HttpStatusCode.OK, txRes.StatusCode);
+        var createdTx = await txRes.Content.ReadFromJsonAsync<TransactionDto>();
+        Assert.NotNull(createdTx);
+
+        // Balance immediately readjusts to 85,000 NGN
+        accounts = await client.GetFromJsonAsync<AccountDto[]>("/api/v1/accounts");
+        opay = Assert.Single(accounts!, a => a.Slug == "opay");
+        Assert.Equal(8_500_000, opay.LatestBalance!.Minor);
+
+        // 3. Update expense transaction to 20,000 NGN
+        var updateRes = await client.PutAsJsonAsync($"/api/v1/transactions/{createdTx!.Id}", new TransactionWriteRequest(
+            DateOnly.FromDateTime(DateTime.UtcNow.Date), "Expense", opay.Id, null, 20_000m, 0m, "NGN", null, null, null, null, null,
+            "Groceries updated", "Supermarket", null, null, false, false));
+        Assert.Equal(HttpStatusCode.OK, updateRes.StatusCode);
+
+        // Balance immediately readjusts to 80,000 NGN
+        accounts = await client.GetFromJsonAsync<AccountDto[]>("/api/v1/accounts");
+        opay = Assert.Single(accounts!, a => a.Slug == "opay");
+        Assert.Equal(8_000_000, opay.LatestBalance!.Minor);
+
+        // 4. Void transaction
+        var voidRes = await client.PostAsync($"/api/v1/transactions/{createdTx.Id}/void", null);
+        Assert.Equal(HttpStatusCode.OK, voidRes.StatusCode);
+
+        // Balance immediately restores to 100,000 NGN
+        accounts = await client.GetFromJsonAsync<AccountDto[]>("/api/v1/accounts");
+        opay = Assert.Single(accounts!, a => a.Slug == "opay");
+        Assert.Equal(10_000_000, opay.LatestBalance!.Minor);
+    }
 }

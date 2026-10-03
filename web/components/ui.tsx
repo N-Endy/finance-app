@@ -92,7 +92,9 @@ export function MoneyView({ money, large }: { money: Money; large?: boolean }) {
       <div style={{ display: "flex", flexWrap: "wrap", gap: "4px", alignItems: "center" }}>
         <span className={`badge ${provenance}`}>{provenance.replace("_", " ")}</span>
         {money.asOf && <span className="badge">as of {money.asOf}</span>}
+        {money.note && <span className="badge" style={{ backgroundColor: "rgba(30, 224, 135, 0.15)", color: "#1ee087" }}>live ledger</span>}
       </div>
+      {money.note && <p className="sentence" style={{ marginTop: 4, fontSize: "0.8rem", color: "var(--text-muted)" }}>{money.note}</p>}
       {money.needed && <p className="sentence" style={{ marginTop: 8 }}>{money.needed}</p>}
     </div>
   );

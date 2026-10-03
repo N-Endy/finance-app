@@ -108,6 +108,10 @@ public sealed class FinanceController(FinanceOsService finance) : ControllerBase
     public Task<TransactionDto> Create([FromBody] TransactionWriteRequest request, CancellationToken ct) =>
         finance.CreateTransactionAsync(request, ct);
 
+    [HttpPut("transactions/{id:guid}")]
+    public Task<TransactionDto> Update(Guid id, [FromBody] TransactionWriteRequest request, CancellationToken ct) =>
+        finance.UpdateTransactionAsync(id, request, ct);
+
     [HttpPost("transactions/{id:guid}/void")]
     public async Task<IActionResult> Void(Guid id, CancellationToken ct)
     {

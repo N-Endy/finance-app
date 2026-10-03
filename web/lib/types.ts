@@ -8,6 +8,7 @@ export type Money = {
   provenanceLabel?: string;
   asOf?: string | null;
   needed?: string | null;
+  note?: string | null;
 };
 
 export type Reconciliation = {

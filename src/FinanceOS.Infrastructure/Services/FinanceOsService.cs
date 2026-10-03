@@ -131,15 +131,13 @@ public sealed class FinanceOsService(
         var result = new List<AccountDto>();
         foreach (var account in accounts)
         {
+            var effective = await GetEffectiveAccountBalanceAsync(account, ct);
             var recon = await ReconcileAsync(account, ct);
-            var latest = await LatestSnapshotAsync(account.Id, ct);
-            var (health, sentence) = await HealthAsync(owner, account, recon, latest, ct);
+            var (health, sentence) = await HealthAsync(owner, account, recon, effective, ct);
             result.Add(new AccountDto(
                 account.Id, account.Slug, account.Name, account.Institution, account.Role.ToString(),
                 account.Job, account.DoNotPutHere, MoneyMapping.HealthName(health), sentence,
-                latest is null
-                    ? MoneyDto.Unknown($"Enter the current {account.Name} balance.")
-                    : MoneyDto.Of(latest.AmountMinor, latest.Currency, latest.Provenance, latest.AsOf),
+                effective,
                 recon.Status.ToString()));
         }
 
@@ -176,15 +174,15 @@ public sealed class FinanceOsService(
     {
         var owner = await RequireOwner(ct);
         var account = await db.Accounts.SingleAsync(a => a.Id == accountId && a.OwnerId == owner.Id, ct);
-        var latest = await LatestSnapshotAsync(account.Id, ct);
-        if (latest is null)
+        var effective = await GetEffectiveAccountBalanceAsync(account, ct);
+        if (effective.Minor is null)
         {
             throw new DomainException($"Cannot assign money in {account.Name} until a balance is entered.");
         }
 
         var existing = await db.Assignments.Where(a => a.AccountId == account.Id).SumAsync(a => a.AmountMinor, ct);
         var next = Money.FromMajor(request.Amount, account.Currency).MinorUnits;
-        if (existing + next > latest.AmountMinor)
+        if (existing + next > effective.Minor.Value)
         {
             throw new DomainException("Assignments cannot exceed the recorded account balance. Unassigned remainder stays visible as money with no job.");
         }
@@ -297,7 +295,7 @@ public sealed class FinanceOsService(
             FeeMinor = fee.MinorUnits,
             Currency = currency,
             CategoryId = request.CategoryId,
-            EnvelopeId = request.EnvelopeId,
+            EnvelopeId = request.EnvelopeId ?? category?.EnvelopeId,
             GoalId = request.GoalId,
             BusinessId = request.BusinessId,
             FamilyRecipientId = request.FamilyRecipientId,
@@ -310,7 +308,7 @@ public sealed class FinanceOsService(
             IsTransfer = type == TransactionType.Transfer
         };
 
-        var signed = type is TransactionType.Income or TransactionType.Deposit or TransactionType.Refund or TransactionType.BusinessRevenue
+        var signed = type is TransactionType.Income or TransactionType.Deposit or TransactionType.Refund or TransactionType.BusinessRevenue or TransactionType.Adjustment
             ? amount.MinorUnits
             : -amount.MinorUnits;
         tx.Postings.Add(new Posting { AccountId = account.Id, AmountMinor = signed, Currency = currency, Role = "primary" });
@@ -363,6 +361,135 @@ public sealed class FinanceOsService(
             AfterJson = JsonSerializer.Serialize(request)
         });
         await AuditAsync(owner.Id, "create", "Transaction", tx.Id, request.Description, ct);
+        await db.SaveChangesAsync(ct);
+        tx.Account = account;
+        tx.Category = category;
+        return ToDto(tx);
+    }
+
+    public async Task<TransactionDto> UpdateTransactionAsync(Guid id, TransactionWriteRequest request, CancellationToken ct)
+    {
+        var owner = await RequireOwner(ct);
+        var type = MoneyMapping.ParseType(request.Type);
+        if (type == TransactionType.Transfer && request.CounterpartyAccountId is null)
+        {
+            throw new DomainException("A transfer needs both accounts. Transfers are not expenses.");
+        }
+
+        var tx = await db.Transactions
+            .Include(t => t.Postings)
+            .Include(t => t.Revisions)
+            .Include(t => t.Account)
+            .Include(t => t.Category)
+            .SingleAsync(t => t.Id == id && t.OwnerId == owner.Id, ct);
+
+        if (tx.IsVoided)
+        {
+            throw new DomainException("Cannot edit a voided transaction.");
+        }
+
+        var beforeJson = JsonSerializer.Serialize(new
+        {
+            tx.Date,
+            tx.Type,
+            tx.AccountId,
+            tx.CounterpartyAccountId,
+            tx.AmountMinor,
+            tx.FeeMinor,
+            tx.CategoryId,
+            tx.EnvelopeId,
+            tx.Description
+        });
+
+        var account = await db.Accounts.SingleAsync(a => a.Id == request.AccountId, ct);
+        var currency = MoneyMapping.ParseCurrency(request.Currency);
+        var amount = Money.FromMajor(request.Amount, currency);
+        var fee = Money.FromMajor(request.Fee, currency);
+        var category = request.CategoryId is null ? null : await db.Categories.SingleAsync(c => c.Id == request.CategoryId, ct);
+
+        tx.Date = request.Date;
+        tx.Type = type;
+        tx.AccountId = request.AccountId;
+        tx.CounterpartyAccountId = request.CounterpartyAccountId;
+        tx.AmountMinor = amount.MinorUnits;
+        tx.FeeMinor = fee.MinorUnits;
+        tx.Currency = currency;
+        tx.CategoryId = request.CategoryId;
+        tx.EnvelopeId = request.EnvelopeId ?? category?.EnvelopeId;
+        tx.GoalId = request.GoalId;
+        tx.BusinessId = request.BusinessId;
+        tx.FamilyRecipientId = request.FamilyRecipientId;
+        tx.Description = request.Description;
+        tx.Merchant = request.Merchant;
+        tx.Notes = request.Notes;
+        tx.Tags = request.Tags;
+        tx.IsBusiness = request.IsBusiness || (category?.IsBusiness ?? false);
+        tx.IsRecurring = request.IsRecurring;
+        tx.IsTransfer = type == TransactionType.Transfer;
+
+        var signed = type is TransactionType.Income or TransactionType.Deposit or TransactionType.Refund or TransactionType.BusinessRevenue or TransactionType.Adjustment
+            ? amount.MinorUnits
+            : -amount.MinorUnits;
+
+        var primaryPosting = tx.Postings.FirstOrDefault(p => p.Role == "primary");
+        if (primaryPosting != null)
+        {
+            primaryPosting.AccountId = account.Id;
+            primaryPosting.AmountMinor = signed;
+            primaryPosting.Currency = currency;
+        }
+        else
+        {
+            db.Postings.Add(new Posting { TransactionId = tx.Id, AccountId = account.Id, AmountMinor = signed, Currency = currency, Role = "primary" });
+        }
+
+        var feePosting = tx.Postings.FirstOrDefault(p => p.Role == "fee");
+        if (fee.MinorUnits > 0)
+        {
+            if (feePosting != null)
+            {
+                feePosting.AccountId = account.Id;
+                feePosting.AmountMinor = -fee.MinorUnits;
+                feePosting.Currency = currency;
+            }
+            else
+            {
+                db.Postings.Add(new Posting { TransactionId = tx.Id, AccountId = account.Id, AmountMinor = -fee.MinorUnits, Currency = currency, Role = "fee" });
+            }
+        }
+        else if (feePosting != null)
+        {
+            db.Postings.Remove(feePosting);
+        }
+
+        var counterpartyPosting = tx.Postings.FirstOrDefault(p => p.Role == "counterparty");
+        if (type == TransactionType.Transfer && request.CounterpartyAccountId is Guid otherId)
+        {
+            if (counterpartyPosting != null)
+            {
+                counterpartyPosting.AccountId = otherId;
+                counterpartyPosting.AmountMinor = amount.MinorUnits;
+                counterpartyPosting.Currency = currency;
+            }
+            else
+            {
+                db.Postings.Add(new Posting { TransactionId = tx.Id, AccountId = otherId, AmountMinor = amount.MinorUnits, Currency = currency, Role = "counterparty" });
+            }
+        }
+        else if (counterpartyPosting != null)
+        {
+            db.Postings.Remove(counterpartyPosting);
+        }
+
+        db.Set<TransactionRevision>().Add(new TransactionRevision
+        {
+            TransactionId = tx.Id,
+            Action = "edit",
+            BeforeJson = beforeJson,
+            AfterJson = JsonSerializer.Serialize(request)
+        });
+
+        await AuditAsync(owner.Id, "edit", "Transaction", tx.Id, request.Description, ct);
         await db.SaveChangesAsync(ct);
         tx.Account = account;
         tx.Category = category;
@@ -530,47 +657,141 @@ public sealed class FinanceOsService(
     public async Task<IReadOnlyList<MoneyMapNodeDto>> MoneyMapAsync(CancellationToken ct)
     {
         var owner = await RequireOwner(ct);
-        var stanbic = await AccountMoneyAsync(owner.Id, "stanbic", ct);
-        var opay = await AccountMoneyAsync(owner.Id, "opay", ct);
-        var kuda = await AccountMoneyAsync(owner.Id, "kuda", ct);
-        var emergency = await AccountMoneyAsync(owner.Id, "cowrywise-emergency", ct);
-        var mmf = await AccountMoneyAsync(owner.Id, "cowrywise-mmf", ct);
-        var children = await AccountMoneyAsync(owner.Id, "cowrywise-children", ct);
-        var home = await AccountMoneyAsync(owner.Id, "cowrywise-home", ct);
+        var nodes = new List<MoneyMapNodeDto>();
 
-        return
-        [
-            Node("salary", "₦543k Salary", "income", MoneyDto.Of(54_300_000, Currency.Ngn, Provenance.Plan), "Reliable monthly salary.", "Around the 27th.", "Spending it before it is assigned leaves bills and goals unfunded.", ["stanbic-node"]),
-            Node("stanbic-node", "Stanbic", "account", stanbic, "Salary command centre / clearing account.", "Salary arrival and bills.", "Spending Stanbic as if it were free cash breaks the monthly plan.", ["opay-node", "cowrywise-node", "rotating-node", "reserve-node"]),
-            Node("opay-node", "OPay", "account", opay, "Daily spending wallet.", "Food, transport, airtime, small purchases.", "Using it as an emergency or housing vault removes the spending boundary.", []),
-            Node("cowrywise-node", "Cowrywise", "vault", null, "Named savings and investments.", "Emergency, MMF, children, home.", "Withdrawing for ordinary spending raids goal money.", ["emergency-node", "mmf-node", "children-node", "home-node"]),
-            Node("emergency-node", "Emergency", "goal", emergency, "True emergencies only.", "After a genuine emergency.", "Using it to move, date, bet, or help family routinely is a rule break.", []),
-            Node("mmf-node", "MMF", "goal", mmf, "Medium-term liquid wealth.", "When the purpose is wealth, not spending.", "Breaking it for lifestyle is an investment-rule violation.", []),
-            Node("children-node", "Children", "goal", children, "Long-term child fund.", "Leave untouched.", "Spending it now steals from a locked 18-year purpose.", []),
-            Node("home-node", "Home savings", "goal", home, "Existing home fund.", "Toward the move, then re-purpose.", "Spending it on daily costs delays housing.", []),
-            Node("rotating-node", "Rotating savings", "expected", MoneyDto.Unknown("Enter the expected rotating payout when you know it. Same pool as ₦100k/month."), "Expected payout. Same pool as ₦100k/month.", "When the payout is received.", "Spending the monthly contribution as lifestyle removes move capital.", []),
-            Node("reserve-node", "Operating reserve", "buffer", MoneyDto.Of(2_600_000, Currency.Ngn, Provenance.Plan), "Timing and small surprises.", "When a planned bill and cash timing differ.", "Draining it for lifestyle removes the buffer.", []),
-            Node("secondary", "₦400k Secondary", "income", MoneyDto.Of(40_000_000, Currency.Ngn, Provenance.Plan), "Strategic, less reliable income.", "Around the 12th.", "Building lifestyle on it creates dependence on uncertain income.", ["kuda-node"]),
-            Node("kuda-node", "Kuda", "account", kuda, "Secondary-income holding.", "Waterfall day.", "Sending the whole ₦400k to Stanbic mixes strategic money into lifestyle.", ["risevest-node", "bamboo-node", "housing-node", "irregular-node", "wealth-node"]),
-            Node("risevest-node", "Risevest $25", "invest", MoneyDto.Unknown("Enter the actual naira charge. An FX rate is not being invented."), "Actual naira charge, not a guessed FX figure.", "When the charge is known.", "Skipping it silently leaves the waterfall incomplete.", []),
-            Node("bamboo-node", "Bamboo $30", "invest", MoneyDto.Unknown("Enter the actual naira charge. An FX rate is not being invented."), "Actual naira charge, not a guessed FX figure.", "When the charge is known.", "Skipping it silently leaves the waterfall incomplete.", []),
-            Node("housing-node", "Housing ₦250k", "goal", MoneyDto.Of(25_000_000, Currency.Ngn, Provenance.Plan), "Primary move capital from secondary income.", "Until the ₦3m working target is funded.", "Using emergency money instead breaks the housing rule.", []),
-            Node("irregular-node", "Annual / irregular ₦30k", "goal", MoneyDto.Of(3_000_000, Currency.Ngn, Provenance.Plan), "Clothes, gifts, Christmas, travel, tech.", "When the planned irregular expense arrives.", "Spending it early empties the sinking fund.", []),
-            Node("wealth-node", "Additional wealth ₦30k", "goal", MoneyDto.Of(3_000_000, Currency.Ngn, Provenance.Plan), "Extra protection / wealth.", "After housing is funded it can be redirected.", "Treating the Kuda remainder as spending money is lifestyle inflation.", [])
-        ];
+        var accounts = await db.Accounts.Where(a => a.OwnerId == owner.Id && a.IsActive).OrderBy(a => a.Name).ToListAsync(ct);
+        var incomeSources = await db.IncomeSources.Where(i => i.OwnerId == owner.Id).OrderBy(i => i.Name).ToListAsync(ct);
+        var plans = await db.AllocationPlans.Include(p => p.Lines).ThenInclude(l => l.Envelope)
+            .Where(p => p.OwnerId == owner.Id && p.IsActive)
+            .ToListAsync(ct);
+        if (plans.Count == 0)
+        {
+            plans = await db.AllocationPlans.Include(p => p.Lines).ThenInclude(l => l.Envelope)
+                .Where(p => p.OwnerId == owner.Id)
+                .ToListAsync(ct);
+        }
+        var envelopes = await db.Envelopes.Where(e => e.OwnerId == owner.Id && e.IsActive).OrderBy(e => e.Name).ToListAsync(ct);
+        var goals = await db.Goals.Where(g => g.OwnerId == owner.Id && g.IsActive).OrderBy(g => g.Name).ToListAsync(ct);
 
-        static MoneyMapNodeDto Node(string id, string label, string kind, MoneyDto? amount, string purpose, string when, string ifSpent, IReadOnlyList<string> children) =>
-            new(id, label, kind, amount ?? MoneyDto.Unknown("This is a group of named buckets, not a single balance."), purpose, when, ifSpent, children);
+        // 1. Income Sources
+        foreach (var income in incomeSources)
+        {
+            var childAccountNodes = new List<string>();
+            if (income.DestinationAccountId != Guid.Empty)
+            {
+                var targetAcc = accounts.FirstOrDefault(a => a.Id == income.DestinationAccountId);
+                if (targetAcc != null) childAccountNodes.Add($"{targetAcc.Slug}-node");
+            }
+            if (childAccountNodes.Count == 0 && accounts.Count > 0)
+            {
+                var clearing = accounts.FirstOrDefault(a => a.Role == AccountRole.Clearing) ?? accounts[0];
+                childAccountNodes.Add($"{clearing.Slug}-node");
+            }
+
+            nodes.Add(new MoneyMapNodeDto(
+                $"income-{income.Slug}",
+                income.Name,
+                "income",
+                MoneyDto.Of(income.ExpectedAmountMinor, income.Currency, Provenance.Plan),
+                string.IsNullOrWhiteSpace(income.Rule) ? $"{income.Reliability} monthly income." : income.Rule,
+                $"Around day {income.ExpectedDayOfMonth} of the month.",
+                "Spending before assigning to envelopes leaves essential bills and savings unfunded.",
+                childAccountNodes));
+        }
+
+        // 2. Financial Accounts
+        foreach (var account in accounts)
+        {
+            var effective = await GetEffectiveAccountBalanceAsync(account, ct);
+            var childNodes = new List<string>();
+
+            var linkedEnvelopes = envelopes.Where(e => e.DefaultFundingAccountId == account.Id).ToList();
+            foreach (var env in linkedEnvelopes)
+            {
+                childNodes.Add($"env-{env.Slug}");
+            }
+            var linkedGoals = goals.Where(g => g.FundingAccountId == account.Id).ToList();
+            foreach (var g in linkedGoals)
+            {
+                childNodes.Add($"goal-{g.Slug}");
+            }
+
+            var kind = account.Role switch
+            {
+                AccountRole.Clearing => "clearing",
+                AccountRole.DailySpending => "spending",
+                AccountRole.StrategicBuffer => "buffer",
+                AccountRole.CashOnHand => "cash",
+                AccountRole.BusinessCard => "business",
+                _ => account.AllowsDailySpending ? "spending" : "account"
+            };
+
+            nodes.Add(new MoneyMapNodeDto(
+                $"{account.Slug}-node",
+                account.Name,
+                kind,
+                effective,
+                string.IsNullOrWhiteSpace(account.Job) ? $"{account.Institution} operating account." : account.Job,
+                string.IsNullOrWhiteSpace(account.WhenToUse) ? "Follow designated operational purpose." : account.WhenToUse,
+                string.IsNullOrWhiteSpace(account.DoNotPutHere) ? "Treating this as unallocated cash disrupts the monthly plan." : $"Do not put: {account.DoNotPutHere}",
+                childNodes));
+        }
+
+        // 3. Envelopes
+        foreach (var env in envelopes)
+        {
+            var line = plans.SelectMany(p => p.Lines).FirstOrDefault(l => l.EnvelopeId == env.Id);
+            var amount = line?.AmountMinor is long m
+                ? MoneyDto.Of(m, Currency.Ngn, Provenance.Plan)
+                : MoneyDto.Unknown("Unallocated envelope target.");
+
+            var childGoals = goals.Where(g => g.Slug == env.Slug || g.Name.Equals(env.Name, StringComparison.OrdinalIgnoreCase))
+                .Select(g => $"goal-{g.Slug}").ToList();
+
+            var kind = env.Class switch
+            {
+                EnvelopeClass.Spend => "spend",
+                EnvelopeClass.Committed => "bills",
+                EnvelopeClass.Sinking => "sinking",
+                EnvelopeClass.Savings or EnvelopeClass.Emergency => "vault",
+                EnvelopeClass.Business => "business",
+                _ => "envelope"
+            };
+
+            nodes.Add(new MoneyMapNodeDto(
+                $"env-{env.Slug}",
+                env.Name,
+                kind,
+                amount,
+                string.IsNullOrWhiteSpace(env.Purpose) ? $"{env.Class} envelope allocation." : env.Purpose,
+                string.IsNullOrWhiteSpace(env.UseRule) ? "Spend only within monthly envelope balance." : env.UseRule,
+                "Overspending this envelope depletes other categories or requires manual rebalancing.",
+                childGoals));
+        }
+
+        // 4. Goals
+        foreach (var goal in goals)
+        {
+            var current = await GoalCurrentAsync(owner, goal, ct);
+            nodes.Add(new MoneyMapNodeDto(
+                $"goal-{goal.Slug}",
+                goal.Name,
+                "goal",
+                current,
+                string.IsNullOrWhiteSpace(goal.Rule) ? $"Target milestone of {Money.FromMajor(goal.TargetMinor / 100m, goal.Currency)}." : goal.Rule,
+                goal.Deadline.HasValue ? $"Target date: {goal.Deadline.Value:yyyy-MM-dd}" : "Ongoing savings goal",
+                "Withdrawing from this goal delays your targeted financial milestone.",
+                []));
+        }
+
+        return nodes;
     }
 
     private async Task<MoneyDto> AccountMoneyAsync(Guid ownerId, string slug, CancellationToken ct)
     {
         var account = await db.Accounts.SingleOrDefaultAsync(a => a.OwnerId == ownerId && a.Slug == slug, ct);
-        if (account is null) return MoneyDto.Unknown("This account is not on the plan.");
-        var snap = await LatestSnapshotAsync(account.Id, ct);
-        return snap is null
-            ? MoneyDto.Unknown($"Enter the current {account.Name} balance.")
-            : MoneyDto.Of(snap.AmountMinor, snap.Currency, snap.Provenance, snap.AsOf);
+        if (account is null) return MoneyDto.Unknown($"No account with slug '{slug}' exists.");
+        return await GetEffectiveAccountBalanceAsync(account, ct);
     }
 
     public async Task<IReadOnlyList<BudgetItemDto>> BudgetAsync(CancellationToken ct)
@@ -578,17 +799,35 @@ public sealed class FinanceOsService(
         var owner = await RequireOwner(ct);
         var today = MoneyMapping.Today();
         var (start, end) = MoneyMapping.MonthBounds(today);
-        var plan = await db.AllocationPlans.Include(p => p.Lines).ThenInclude(l => l.Envelope)
+        var plans = await db.AllocationPlans
+            .Include(p => p.Lines).ThenInclude(l => l.Envelope)
             .Include(p => p.IncomeSource)
-            .SingleAsync(p => p.OwnerId == owner.Id && p.IncomeSource!.Slug == "salary", ct);
+            .Where(p => p.OwnerId == owner.Id && p.IsActive)
+            .ToListAsync(ct);
+        if (plans.Count == 0)
+        {
+            plans = await db.AllocationPlans
+                .Include(p => p.Lines).ThenInclude(l => l.Envelope)
+                .Include(p => p.IncomeSource)
+                .Where(p => p.OwnerId == owner.Id)
+                .Take(1)
+                .ToListAsync(ct);
+        }
+
         var txs = await db.Transactions.Include(t => t.Category).Include(t => t.Envelope)
             .Where(t => t.OwnerId == owner.Id && !t.IsVoided && t.Date >= start && t.Date <= end && !t.IsTransfer && !t.IsBusiness)
             .ToListAsync(ct);
 
         var items = new List<BudgetItemDto>();
-        foreach (var line in plan.Lines.Where(l => l.Envelope is { Class: EnvelopeClass.Spend or EnvelopeClass.Committed or EnvelopeClass.Sinking or EnvelopeClass.Business }))
+        var allLines = plans.SelectMany(p => p.Lines)
+            .Where(l => l.Envelope is { Class: EnvelopeClass.Spend or EnvelopeClass.Committed or EnvelopeClass.Sinking or EnvelopeClass.Business })
+            .ToList();
+
+        foreach (var line in allLines)
         {
-            var actual = txs.Where(t => t.EnvelopeId == line.EnvelopeId && t.Type is TransactionType.Expense or TransactionType.Fee)
+            var actual = txs.Where(t => 
+                (t.EnvelopeId == line.EnvelopeId || (t.EnvelopeId == null && t.Category != null && t.Category.EnvelopeId == line.EnvelopeId)) 
+                && t.Type is TransactionType.Expense or TransactionType.Fee)
                 .Sum(t => t.AmountMinor);
             var budget = line.AmountMinor ?? 0;
             var (status, sentence, percent) = BudgetStatusCalculator.Evaluate(budget, actual, owner.WatchPercent, owner.WarningPercent, owner.OverBudgetPercent);
@@ -619,10 +858,23 @@ public sealed class FinanceOsService(
     public async Task UpdateBudgetLineAsync(string category, decimal amount, CancellationToken ct)
     {
         var owner = await RequireOwner(ct);
-        var plan = await db.AllocationPlans.Include(p => p.Lines).Include(p => p.IncomeSource)
-            .SingleAsync(p => p.OwnerId == owner.Id && p.IncomeSource!.Slug == "salary", ct);
-        var line = plan.Lines.SingleOrDefault(l => string.Equals(l.Name, category, StringComparison.OrdinalIgnoreCase))
-                   ?? throw new DomainException($"No salary allocation named {category}.");
+        var planIds = await db.AllocationPlans
+            .Where(p => p.OwnerId == owner.Id && p.IsActive)
+            .Select(p => p.Id)
+            .ToListAsync(ct);
+        if (planIds.Count == 0)
+        {
+            planIds = await db.AllocationPlans
+                .Where(p => p.OwnerId == owner.Id)
+                .Select(p => p.Id)
+                .ToListAsync(ct);
+        }
+        var lines = await db.AllocationLines
+            .Where(l => planIds.Contains(l.AllocationPlanId))
+            .ToListAsync(ct);
+        var line = lines.SingleOrDefault(l => string.Equals(l.Name, category, StringComparison.OrdinalIgnoreCase))
+                   ?? lines.FirstOrDefault(l => l.Name.Contains(category, StringComparison.OrdinalIgnoreCase))
+                   ?? throw new DomainException($"No allocation line named {category}.");
         line.AmountMinor = Money.NgnFromMajor(amount).MinorUnits;
         await db.SaveChangesAsync(ct);
     }
@@ -1837,11 +2089,10 @@ public sealed class FinanceOsService(
             .Where(t => t.OwnerId == owner.Id && !t.IsVoided && t.Date >= yearStart && t.Category!.IsFamily)
             .SumAsync(t => t.AmountMinor, ct);
         var open = violations.Where(v => v.IsOpen).ToList();
-        var stanbic = await db.Accounts.SingleAsync(a => a.OwnerId == owner.Id && a.Slug == "stanbic", ct);
-        var stanbicSnap = await LatestSnapshotAsync(stanbic.Id, ct);
-        var stanbicMoney = stanbicSnap is null
-            ? MoneyDto.Unknown("Confirm the current Stanbic balance.")
-            : MoneyDto.Of(stanbicSnap.AmountMinor, stanbicSnap.Currency, stanbicSnap.Provenance, stanbicSnap.AsOf);
+        var accounts = await db.Accounts.Where(a => a.OwnerId == owner.Id && a.IsActive).ToListAsync(ct);
+        var businesses = await db.Businesses.Where(b => b.OwnerId == owner.Id && b.IsActive).ToListAsync(ct);
+        var stanbic = accounts.FirstOrDefault(a => a.Slug == "stanbic") ?? accounts.FirstOrDefault(a => a.Role == AccountRole.Clearing) ?? accounts.FirstOrDefault();
+        var stanbicMoney = stanbic is null ? MoneyDto.Unknown("No Stanbic account recorded.") : await GetEffectiveAccountBalanceAsync(stanbic, ct);
         var facts = new List<LedgerFact>
         {
             Fact("Actually spendable", spendable.Amount),
@@ -1865,6 +2116,27 @@ public sealed class FinanceOsService(
             Fact("Stanbic current balance", stanbicMoney)
         };
 
+        foreach (var acc in accounts)
+        {
+            var accBal = await GetEffectiveAccountBalanceAsync(acc, ct);
+            facts.Add(Fact($"{acc.Name} balance", accBal));
+            if (acc.MonthlyAllowanceMinor is long accCap)
+            {
+                facts.Add(Fact($"{acc.Name} monthly allowance", MoneyDto.Of(accCap, acc.Currency, Provenance.Confirmed)));
+            }
+        }
+
+        foreach (var b in businesses)
+        {
+            if (b.Slug != "matchpredictor")
+            {
+                var bDto = await BusinessBySlugAsync(b.Slug, ct);
+                facts.Add(Fact($"{b.Name} revenue", bDto.Revenue));
+                facts.Add(Fact($"{b.Name} expenses", bDto.Expenses));
+                facts.Add(Fact($"{b.Name} net", bDto.Net));
+            }
+        }
+
         if (llm.IsConfigured)
         {
             var user = $"Question: {message}\n\nFacts:\n{LedgerFacts.ToJson(facts)}";
@@ -1884,14 +2156,16 @@ public sealed class FinanceOsService(
                 "UNKNOWN. Finance OS does not give betting advice. I can restate recorded betting spend from the ledger, not what to wager.",
                 [], "Betting advice");
         }
-        else if (lower.Contains("stanbic") && (lower.Contains("balance") || lower.Contains("how much")))
+        else if (accounts.FirstOrDefault(a => lower.Contains(a.Name.ToLowerInvariant()) || lower.Contains(a.Slug.ToLowerInvariant())) is { } matchedAcc &&
+                 (lower.Contains("balance") || lower.Contains("how much")))
         {
-            answer = stanbicMoney.Minor is null
-                ? AssistantEngine.FromFacts("What is my Stanbic balance?",
-                    "UNKNOWN. Confirm the current Stanbic balance on Accounts before I can restate it.",
-                    [], "Stanbic current balance")
-                : AssistantEngine.FromFacts("What is my Stanbic balance?",
-                    $"The latest recorded Stanbic figure is {stanbicMoney.Formatted} ({stanbicMoney.ProvenanceLabel}).",
+            var accBal = await GetEffectiveAccountBalanceAsync(matchedAcc, ct);
+            answer = accBal.Minor is null
+                ? AssistantEngine.FromFacts($"What is my {matchedAcc.Name} balance?",
+                    $"UNKNOWN. Confirm the current {matchedAcc.Name} balance on Accounts before I can restate it.",
+                    [], $"{matchedAcc.Name} current balance")
+                : AssistantEngine.FromFacts($"What is my {matchedAcc.Name} balance?",
+                    $"The latest recorded {matchedAcc.Name} figure is {accBal.Formatted} ({accBal.ProvenanceLabel}).",
                     []);
         }
         else if (lower.Contains("afford") || lower.Contains("purchase") || lower.Contains("buy"))
@@ -2033,6 +2307,61 @@ public sealed class FinanceOsService(
         await Task.CompletedTask;
     }
 
+    public async Task<MoneyDto> GetEffectiveAccountBalanceAsync(FinancialAccount account, CancellationToken ct)
+    {
+        var latestSnapshot = await db.BalanceSnapshots
+            .Where(s => s.AccountId == account.Id && s.Source != "opening")
+            .OrderByDescending(s => s.AsOf)
+            .ThenByDescending(s => s.RecordedAtUtc)
+            .FirstOrDefaultAsync(ct);
+
+        if (latestSnapshot is null)
+        {
+            return MoneyDto.Unknown($"Enter the current {account.Name} balance.", account.Currency);
+        }
+
+        var baselineMinor = latestSnapshot.AmountMinor;
+        var provenance = latestSnapshot.Provenance;
+        var asOf = latestSnapshot.AsOf;
+
+        var txQuery = db.Transactions
+            .Where(t => !t.IsVoided && (t.AccountId == account.Id || t.CounterpartyAccountId == account.Id))
+            .Where(t => t.Date > latestSnapshot.AsOf ||
+                (t.Date == latestSnapshot.AsOf && t.CreatedAtUtc > latestSnapshot.RecordedAtUtc));
+
+        var txs = await txQuery.ToListAsync(ct);
+        long netMovementMinor = 0;
+        foreach (var tx in txs)
+        {
+            var directedAtThis = tx.AccountId == account.Id;
+            if (directedAtThis)
+            {
+                if (tx.Type is TransactionType.Income or TransactionType.Deposit or TransactionType.Refund or TransactionType.BusinessRevenue or TransactionType.Adjustment)
+                {
+                    netMovementMinor += tx.AmountMinor;
+                }
+                else
+                {
+                    netMovementMinor -= tx.AmountMinor;
+                }
+                netMovementMinor -= tx.FeeMinor;
+            }
+            else if (tx.IsTransfer && tx.CounterpartyAccountId == account.Id && tx.Type == TransactionType.Transfer)
+            {
+                netMovementMinor += tx.AmountMinor;
+            }
+        }
+
+        var effectiveMinor = baselineMinor + netMovementMinor;
+        string? note = null;
+        if (txs.Count > 0 && latestSnapshot != null)
+        {
+            note = $"Adjusted by {txs.Count} transaction(s) since {latestSnapshot.AsOf:yyyy-MM-dd} snapshot.";
+        }
+
+        return MoneyDto.Of(effectiveMinor, account.Currency, provenance, asOf > MoneyMapping.Today() ? asOf : MoneyMapping.Today(), note);
+    }
+
     private async Task<BalanceSnapshot?> LatestSnapshotAsync(Guid accountId, CancellationToken ct) =>
         await db.BalanceSnapshots
             .Where(s => s.AccountId == accountId && s.Source != "opening")
@@ -2071,9 +2400,9 @@ public sealed class FinanceOsService(
     }
 
     private async Task<(AccountHealth Health, string Sentence)> HealthAsync(
-        Owner owner, FinancialAccount account, ReconciliationResult recon, BalanceSnapshot? latest, CancellationToken ct)
+        Owner owner, FinancialAccount account, ReconciliationResult recon, MoneyDto effective, CancellationToken ct)
     {
-        if (latest is null)
+        if (effective.Minor is null)
         {
             return (AccountHealth.Unknown, $"{account.Name} balance is UNKNOWN. Enter the current figure before a health colour is shown.");
         }
@@ -2083,32 +2412,38 @@ public sealed class FinanceOsService(
             return (AccountHealth.Attention, recon.Sentence);
         }
 
-        if (account.Slug == "opay" && owner.OpayMonthlyAllowanceMinor is long allowance)
+        var allowance = account.MonthlyAllowanceMinor ?? (account.Slug == "opay" ? owner.OpayMonthlyAllowanceMinor : null);
+        if (allowance is long monthlyCap && monthlyCap > 0)
         {
             var (start, end) = MoneyMapping.MonthBounds(MoneyMapping.Today());
             var spent = await db.Transactions.Where(t => t.AccountId == account.Id && !t.IsVoided && t.Date >= start && t.Date <= end && t.Type == TransactionType.Expense)
                 .SumAsync(t => t.AmountMinor, ct);
-            if (spent > allowance)
+            if (spent > monthlyCap)
             {
-                var pct = (spent - allowance) * 100m / allowance;
-                return (AccountHealth.Watch, $"OPay spending is {pct:0.#}% above the chosen allowance.");
+                var pct = (spent - monthlyCap) * 100m / monthlyCap;
+                return (AccountHealth.Watch, $"{account.Name} spending is {pct:0.#}% above the chosen allowance.");
             }
         }
 
-        if (account.Slug == "access")
+        var today = MoneyMapping.Today();
+        var due = await db.Subscriptions.Where(s => s.PaymentAccountId == account.Id && s.IsActive && s.NextBillingDate <= today.AddDays(7) && s.AmountMinor > 0)
+            .SumAsync(s => s.AmountMinor, ct);
+        if (due > 0 && effective.Minor < due)
         {
-            var today = MoneyMapping.Today();
-            var due = await db.Subscriptions.Where(s => s.PaymentAccountId == account.Id && s.IsActive && s.NextBillingDate <= today.AddDays(7) && s.AmountMinor > 0)
-                .SumAsync(s => s.AmountMinor, ct);
-            if (latest.AmountMinor < due)
+            return (AccountHealth.Watch, $"{account.Name} needs funding for {Money.FromMajor(due / 100m, account.Currency)} due in the next 7 days.");
+        }
+
+        if (account.CreditLimitMinor is long limit && limit > 0)
+        {
+            if (effective.Minor < -limit)
             {
-                return (AccountHealth.Watch, $"Access needs funding for {Money.FromMajor(due / 100m, Currency.Ngn)} due in the next 7 days.");
+                return (AccountHealth.Watch, $"{account.Name} balance exceeds the credit limit of {Money.FromMajor(limit / 100m, account.Currency)}.");
             }
         }
 
-        if (latest.Provenance != Provenance.Confirmed)
+        if (effective.ProvenanceLabel != "confirmed")
         {
-            return (AccountHealth.Unknown, $"{account.Name} still uses a {latest.Provenance} figure from {latest.AsOf:yyyy-MM-dd}. Confirm the current balance.");
+            return (AccountHealth.Unknown, $"{account.Name} still uses a {effective.ProvenanceLabel} figure from {effective.AsOf:yyyy-MM-dd}. Confirm the current balance.");
         }
 
         return (AccountHealth.Healthy, $"{account.Name} has a confirmed balance and no open reconciliation difference.");
@@ -2123,14 +2458,15 @@ public sealed class FinanceOsService(
         var items = new List<(string, long, Currency, Provenance, bool, bool, bool)>();
         foreach (var account in cashAccounts)
         {
-            var snap = await LatestSnapshotAsync(account.Id, ct);
-            if (snap is null)
+            var effective = await GetEffectiveAccountBalanceAsync(account, ct);
+            if (effective.Minor is null)
             {
                 items.Add((account.Name, 0, account.Currency, Provenance.Unknown, true, false, false));
                 continue;
             }
 
-            items.Add((account.Name, snap.AmountMinor, snap.Currency, snap.Provenance, true, false, false));
+            var prov = Enum.TryParse<Provenance>(effective.Provenance, true, out var p) ? p : Provenance.Confirmed;
+            items.Add((account.Name, effective.Minor.Value, account.Currency, prov, true, false, false));
         }
 
         foreach (var holding in holdings)
@@ -2207,31 +2543,36 @@ public sealed class FinanceOsService(
 
     private async Task<MoneyDto> LiquidCashAsync(Owner owner, CancellationToken ct)
     {
-        var slugs = new[] { "stanbic", "kuda", "opay", "cash", "access" };
+        var accounts = await db.Accounts
+            .Where(a => a.OwnerId == owner.Id && a.IsActive &&
+                (a.Role == AccountRole.Clearing || a.Role == AccountRole.DailySpending ||
+                 a.Role == AccountRole.StrategicBuffer || a.Role == AccountRole.CashOnHand ||
+                 a.Role == AccountRole.BusinessCard || a.AllowsDailySpending))
+            .ToListAsync(ct);
+
         long confirmed = 0;
         var missing = new List<string>();
-        foreach (var slug in slugs)
+        foreach (var account in accounts)
         {
-            var account = await db.Accounts.SingleAsync(a => a.OwnerId == owner.Id && a.Slug == slug, ct);
-            var snap = await LatestSnapshotAsync(account.Id, ct);
-            if (snap is null)
+            var effective = await GetEffectiveAccountBalanceAsync(account, ct);
+            if (effective.Minor is null)
             {
                 missing.Add(account.Name);
                 continue;
             }
 
-            if (snap.Provenance == Provenance.Confirmed && snap.Currency == Currency.Ngn)
+            if (effective.ProvenanceLabel == "confirmed" && account.Currency == Currency.Ngn)
             {
-                confirmed += snap.AmountMinor;
+                confirmed += effective.Minor.Value;
             }
             else
             {
-                missing.Add($"{account.Name} ({snap.Provenance} {snap.AsOf:yyyy-MM-dd})");
+                missing.Add($"{account.Name} ({effective.ProvenanceLabel} {effective.AsOf:yyyy-MM-dd})");
             }
         }
 
-        return missing.Count == slugs.Length
-            ? MoneyDto.Unknown("Confirm Stanbic, Kuda, OPay, cash, and Access balances. Last-known figures are not treated as liquid cash today.")
+        return (confirmed == 0 && missing.Count > 0) || accounts.Count == 0
+            ? MoneyDto.Unknown("Confirm your liquid account balances. Last-known figures are not treated as liquid cash today.")
             : MoneyDto.Of(confirmed, Currency.Ngn, Provenance.Confirmed);
     }
 
@@ -2255,11 +2596,18 @@ public sealed class FinanceOsService(
 
     private async Task<(MoneyDto Amount, string Sentence, ExplainDto Explain)> HousingMoneyAsync(Owner owner, CancellationToken ct)
     {
-        var piggy = await db.Accounts.SingleAsync(a => a.OwnerId == owner.Id && a.Slug == "piggyvest-housing", ct);
-        var piggySnap = await LatestSnapshotAsync(piggy.Id, ct);
-        long? confirmedPiggy = piggySnap is { Provenance: Provenance.Confirmed } ? piggySnap.AmountMinor : null;
-        var home = await db.Holdings.SingleAsync(h => h.OwnerId == owner.Id && h.Slug == "home", ct);
-        long? homeMinor = home.Provenance == Provenance.Unknown ? null : home.AmountMinor;
+        var piggy = await db.Accounts.SingleOrDefaultAsync(a => a.OwnerId == owner.Id && (a.Slug == "piggyvest-housing" || a.Slug == "housing"), ct);
+        long? confirmedPiggy = null;
+        if (piggy != null)
+        {
+            var eff = await GetEffectiveAccountBalanceAsync(piggy, ct);
+            if (eff.Minor != null && eff.ProvenanceLabel == "confirmed")
+            {
+                confirmedPiggy = eff.Minor;
+            }
+        }
+        var home = await db.Holdings.SingleOrDefaultAsync(h => h.OwnerId == owner.Id && h.Slug == "home", ct);
+        long? homeMinor = home is null || home.Provenance == Provenance.Unknown ? null : home.AmountMinor;
         var rotating = await db.Holdings.SingleOrDefaultAsync(h => h.OwnerId == owner.Id && h.Slug == "rotating", ct);
         long? rotatingMinor = rotating is null || rotating.Provenance == Provenance.Unknown ? null : rotating.AmountMinor;
         var projection = HousingProjection.Project(
@@ -2326,9 +2674,9 @@ public sealed class FinanceOsService(
 
         if (goal.FundingAccountId is Guid accountId)
         {
-            var snap = await LatestSnapshotAsync(accountId, ct);
-            if (snap is null) return MoneyDto.Unknown($"Enter the current balance for {goal.Name}.");
-            return MoneyDto.Of(snap.AmountMinor, snap.Currency, snap.Provenance, snap.AsOf);
+            var acc = await db.Accounts.SingleOrDefaultAsync(a => a.Id == accountId, ct);
+            if (acc is null) return MoneyDto.Unknown($"Enter the current balance for {goal.Name}.");
+            return await GetEffectiveAccountBalanceAsync(acc, ct);
         }
 
         var holding = await db.Holdings.SingleOrDefaultAsync(h => h.OwnerId == owner.Id && h.Slug == goal.Slug, ct);
@@ -2340,11 +2688,11 @@ public sealed class FinanceOsService(
     private async Task<List<UnknownFactDto>> UnknownFactsAsync(Owner owner, CancellationToken ct)
     {
         var needed = new List<UnknownFactDto>();
-        foreach (var slug in new[] { "stanbic", "piggyvest-housing", "access" })
+        var activeAccounts = await db.Accounts.Where(a => a.OwnerId == owner.Id && a.IsActive).ToListAsync(ct);
+        foreach (var account in activeAccounts)
         {
-            var account = await db.Accounts.SingleAsync(a => a.OwnerId == owner.Id && a.Slug == slug, ct);
-            var snap = await LatestSnapshotAsync(account.Id, ct);
-            if (snap is null || snap.Provenance != Provenance.Confirmed)
+            var eff = await GetEffectiveAccountBalanceAsync(account, ct);
+            if (eff.Minor is null || eff.ProvenanceLabel != "confirmed")
             {
                 needed.Add(new UnknownFactDto($"Enter a confirmed {account.Name} balance.", "/accounts"));
             }
