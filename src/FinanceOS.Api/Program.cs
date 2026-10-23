@@ -47,7 +47,10 @@ builder.Services.AddDbContext<FinanceDbContext>(options =>
 });
 builder.Services.AddHttpClient<OpenAiLedgerClient>(client =>
 {
-    client.BaseAddress = new Uri("https://api.openai.com/");
+    var baseUrl = Environment.GetEnvironmentVariable("OPENAI_BASE_URL");
+    var url = string.IsNullOrWhiteSpace(baseUrl) ? "https://api.openai.com/" : baseUrl.Trim();
+    if (!url.EndsWith('/')) url += "/";
+    client.BaseAddress = new Uri(url);
     client.Timeout = TimeSpan.FromSeconds(20);
 });
 builder.Services.AddHttpClient<FxRateClient>(client =>
