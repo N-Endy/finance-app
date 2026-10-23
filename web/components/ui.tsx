@@ -100,6 +100,35 @@ export function Shell({ children }: { children: React.ReactNode }) {
                 ))}
               </div>
             ))}
+            <div style={{ marginTop: "1.5rem", paddingTop: "1rem", borderTop: "1px solid var(--line)" }}>
+              <button
+                type="button"
+                onClick={async () => {
+                  try {
+                    await api.logout();
+                  } finally {
+                    window.location.href = "/login";
+                  }
+                }}
+                style={{
+                  width: "100%",
+                  minHeight: "44px",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  background: "rgba(240, 90, 74, 0.12)",
+                  border: "1px solid rgba(240, 90, 74, 0.3)",
+                  borderRadius: "8px",
+                  color: "var(--alert, #f05a4a)",
+                  cursor: "pointer",
+                  fontSize: "0.92rem",
+                  fontWeight: 600,
+                  padding: "10px 16px"
+                }}
+              >
+                Sign Out
+              </button>
+            </div>
           </div>
         </div>
       )}

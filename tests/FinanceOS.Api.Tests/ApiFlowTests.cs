@@ -428,4 +428,52 @@ public class ApiFlowTests : IClassFixture<WebApplicationFactory<Program>>
         Assert.True(taxStatus.DaysUntilDeadline >= 0);
         Assert.NotEmpty(taxStatus.ActionableGuidance);
     }
+
+    [Fact]
+    public async Task Auth_lifecycle_logout_and_full_account_cascade_deletion()
+    {
+        var client = _factory.CreateClient(new WebApplicationFactoryClientOptions { HandleCookies = true });
+        var email = $"purge-user-{Guid.NewGuid():N}@test.com";
+        const string password = "secure-password-1234";
+
+        // 1. Sign Up
+        var registerRes = await client.PostAsJsonAsync("/api/v1/auth/register", new RegisterRequest(
+            "Purge User",
+            email,
+            password,
+            "USD",
+            "zero_based"
+        ));
+        Assert.Equal(HttpStatusCode.OK, registerRes.StatusCode);
+
+        // 2. Verify Authenticated
+        var meRes = await client.GetFromJsonAsync<AuthStatusDto>("/api/v1/auth/me");
+        Assert.NotNull(meRes);
+        Assert.True(meRes!.Authenticated);
+        Assert.Equal("Purge User", meRes.DisplayName);
+
+        // 3. Log Out
+        var logoutRes = await client.PostAsync("/api/v1/auth/logout", null);
+        Assert.Equal(HttpStatusCode.OK, logoutRes.StatusCode);
+
+        // 4. Verify Unauthenticated after Logout
+        var protectedRes = await client.GetAsync("/api/v1/dashboard");
+        Assert.Equal(HttpStatusCode.Unauthorized, protectedRes.StatusCode);
+
+        // 5. Sign In Again
+        var loginRes = await client.PostAsJsonAsync("/api/v1/auth/login", new LoginRequest(email, password));
+        Assert.Equal(HttpStatusCode.OK, loginRes.StatusCode);
+
+        // 6. Delete Account (Complete Cascade Purge)
+        var deleteRes = await client.DeleteAsync("/api/v1/data/account");
+        Assert.Equal(HttpStatusCode.OK, deleteRes.StatusCode);
+
+        // 7. Verify Unauthenticated after Account Deletion
+        var protectedAfterDelete = await client.GetAsync("/api/v1/dashboard");
+        Assert.Equal(HttpStatusCode.Unauthorized, protectedAfterDelete.StatusCode);
+
+        // 8. Verify Account Cannot Log In (Owner deleted from database)
+        var loginAfterDelete = await client.PostAsJsonAsync("/api/v1/auth/login", new LoginRequest(email, password));
+        Assert.NotEqual(HttpStatusCode.OK, loginAfterDelete.StatusCode);
+    }
 }

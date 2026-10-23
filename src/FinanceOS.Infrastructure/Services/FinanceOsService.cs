@@ -2248,7 +2248,50 @@ public sealed class FinanceOsService(
     public async Task DeleteTenantAccountAsync(CancellationToken ct)
     {
         var owner = await RequireOwner(ct);
+
+        // 1. Clear all ledger lines, accounts, categories, plans, envelopes, and financial records
         await PlanSeeder.ClearOwnerPlanAsync(db, owner, ct);
+
+        // 2. Clear user audit logs
+        var auditLogs = await db.AuditLogs.Where(a => a.OwnerId == owner.Id).ToListAsync(ct);
+        if (auditLogs.Count > 0)
+        {
+            db.AuditLogs.RemoveRange(auditLogs);
+        }
+
+        // 3. Clear household workspaces owned by this user & cascade member links
+        var ownedWorkspaces = await db.HouseholdWorkspaces.Include(w => w.Members)
+            .Where(w => w.PrimaryOwnerId == owner.Id).ToListAsync(ct);
+
+        foreach (var ws in ownedWorkspaces)
+        {
+            var memberUserIds = ws.Members.Select(m => m.UserId).ToList();
+            if (memberUserIds.Count > 0)
+            {
+                var partnerOwners = await db.Owners.Where(o => memberUserIds.Contains(o.Id)).ToListAsync(ct);
+                foreach (var partner in partnerOwners)
+                {
+                    if (partner.ActiveWorkspaceId == ws.Id)
+                    {
+                        partner.ActiveWorkspaceId = null;
+                    }
+                }
+            }
+            db.HouseholdMembers.RemoveRange(ws.Members);
+        }
+        if (ownedWorkspaces.Count > 0)
+        {
+            db.HouseholdWorkspaces.RemoveRange(ownedWorkspaces);
+        }
+
+        // 4. Remove membership in other households
+        var externalMemberships = await db.HouseholdMembers.Where(m => m.UserId == owner.Id).ToListAsync(ct);
+        if (externalMemberships.Count > 0)
+        {
+            db.HouseholdMembers.RemoveRange(externalMemberships);
+        }
+
+        // 5. Delete the owner account
         db.Owners.Remove(owner);
         await db.SaveChangesAsync(ct);
     }
