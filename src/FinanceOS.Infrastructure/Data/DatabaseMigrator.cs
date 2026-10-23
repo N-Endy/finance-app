@@ -25,29 +25,25 @@ public static class DatabaseMigrator
     private static async Task MigratePostgresAsync(FinanceDbContext db, CancellationToken ct)
     {
         // 1. Ensure all base tables exist first if this is a blank DB
-        await db.Database.EnsureCreatedAsync(ct);
-
-        // 2. Safely add missing columns to existing tables
-        var addColumnsSql = """
-            ALTER TABLE "Owners" ADD COLUMN IF NOT EXISTS "BaseCurrency" integer NOT NULL DEFAULT 0;
-            ALTER TABLE "Owners" ADD COLUMN IF NOT EXISTS "Archetype" text NULL;
-            ALTER TABLE "Owners" ADD COLUMN IF NOT EXISTS "OnboardingCompleted" boolean NOT NULL DEFAULT true;
-            ALTER TABLE "Owners" ADD COLUMN IF NOT EXISTS "ActiveWorkspaceId" uuid NULL;
-            ALTER TABLE "LedgerTransactions" ADD COLUMN IF NOT EXISTS "Merchant" text NULL;
-            ALTER TABLE "BalanceSnapshots" ADD COLUMN IF NOT EXISTS "Source" text NOT NULL DEFAULT 'manual';
-            """;
-
         try
         {
-            await db.Database.ExecuteSqlRawAsync(addColumnsSql, ct);
+            await db.Database.EnsureCreatedAsync(ct);
         }
-        catch
+        catch (Exception ex)
         {
-            // Ignore if column alter errors
+            Console.WriteLine($"[Migrator] EnsureCreated notice: {ex.Message}");
         }
 
-        // 3. Ensure Household collaboration tables exist
-        var createHouseholdSql = """
+        // 2. Safely add missing columns to existing tables individually
+        string[] statements =
+        [
+            "ALTER TABLE \"Owners\" ADD COLUMN IF NOT EXISTS \"BaseCurrency\" integer NOT NULL DEFAULT 0;",
+            "ALTER TABLE \"Owners\" ADD COLUMN IF NOT EXISTS \"Archetype\" text NULL;",
+            "ALTER TABLE \"Owners\" ADD COLUMN IF NOT EXISTS \"OnboardingCompleted\" boolean NOT NULL DEFAULT true;",
+            "ALTER TABLE \"Owners\" ADD COLUMN IF NOT EXISTS \"ActiveWorkspaceId\" uuid NULL;",
+            "ALTER TABLE \"Transactions\" ADD COLUMN IF NOT EXISTS \"Merchant\" text NULL;",
+            "ALTER TABLE \"BalanceSnapshots\" ADD COLUMN IF NOT EXISTS \"Source\" text NOT NULL DEFAULT 'manual';",
+            """
             CREATE TABLE IF NOT EXISTS "HouseholdWorkspaces" (
                 "Id" uuid NOT NULL PRIMARY KEY,
                 "PrimaryOwnerId" uuid NOT NULL,
@@ -56,8 +52,9 @@ public static class DatabaseMigrator
                 "InviteExpiresAtUtc" timestamp with time zone NULL,
                 "CreatedAtUtc" timestamp with time zone NOT NULL
             );
-            CREATE INDEX IF NOT EXISTS "IX_HouseholdWorkspaces_InviteToken" ON "HouseholdWorkspaces" ("InviteToken");
-
+            """,
+            "CREATE INDEX IF NOT EXISTS \"IX_HouseholdWorkspaces_InviteToken\" ON \"HouseholdWorkspaces\" (\"InviteToken\");",
+            """
             CREATE TABLE IF NOT EXISTS "HouseholdMembers" (
                 "Id" uuid NOT NULL PRIMARY KEY,
                 "WorkspaceId" uuid NOT NULL,
@@ -65,43 +62,75 @@ public static class DatabaseMigrator
                 "Role" text NOT NULL,
                 "JoinedAtUtc" timestamp with time zone NOT NULL
             );
-            CREATE UNIQUE INDEX IF NOT EXISTS "IX_HouseholdMembers_WorkspaceId_UserId" ON "HouseholdMembers" ("WorkspaceId", "UserId");
-            """;
+            """,
+            "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_HouseholdMembers_WorkspaceId_UserId\" ON \"HouseholdMembers\" (\"WorkspaceId\", \"UserId\");"
+        ];
 
-        try
+        foreach (var sql in statements)
         {
-            await db.Database.ExecuteSqlRawAsync(createHouseholdSql, ct);
-        }
-        catch
-        {
-            // Ignore if table creation errors
+            try
+            {
+                await db.Database.ExecuteSqlRawAsync(sql, ct);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Migrator Notice] Postgres statement execution: {ex.Message}");
+            }
         }
     }
 
     private static async Task MigrateSqliteAsync(FinanceDbContext db, CancellationToken ct)
     {
-        await db.Database.EnsureCreatedAsync(ct);
+        try
+        {
+            await db.Database.EnsureCreatedAsync(ct);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Migrator] SQLite EnsureCreated notice: {ex.Message}");
+        }
 
-        // SQLite column additions
-        string[] columns =
+        // SQLite column and table additions
+        string[] statements =
         [
             "ALTER TABLE Owners ADD COLUMN BaseCurrency INTEGER NOT NULL DEFAULT 0;",
             "ALTER TABLE Owners ADD COLUMN Archetype TEXT NULL;",
             "ALTER TABLE Owners ADD COLUMN OnboardingCompleted INTEGER NOT NULL DEFAULT 1;",
             "ALTER TABLE Owners ADD COLUMN ActiveWorkspaceId TEXT NULL;",
-            "ALTER TABLE LedgerTransactions ADD COLUMN Merchant TEXT NULL;",
-            "ALTER TABLE BalanceSnapshots ADD COLUMN Source TEXT NOT NULL DEFAULT 'manual';"
+            "ALTER TABLE Transactions ADD COLUMN Merchant TEXT NULL;",
+            "ALTER TABLE BalanceSnapshots ADD COLUMN Source TEXT NOT NULL DEFAULT 'manual';",
+            """
+            CREATE TABLE IF NOT EXISTS HouseholdWorkspaces (
+                Id TEXT NOT NULL PRIMARY KEY,
+                PrimaryOwnerId TEXT NOT NULL,
+                Name TEXT NOT NULL,
+                InviteToken TEXT NULL,
+                InviteExpiresAtUtc TEXT NULL,
+                CreatedAtUtc TEXT NOT NULL
+            );
+            """,
+            "CREATE INDEX IF NOT EXISTS IX_HouseholdWorkspaces_InviteToken ON HouseholdWorkspaces (InviteToken);",
+            """
+            CREATE TABLE IF NOT EXISTS HouseholdMembers (
+                Id TEXT NOT NULL PRIMARY KEY,
+                WorkspaceId TEXT NOT NULL,
+                UserId TEXT NOT NULL,
+                Role TEXT NOT NULL,
+                JoinedAtUtc TEXT NOT NULL
+            );
+            """,
+            "CREATE UNIQUE INDEX IF NOT EXISTS IX_HouseholdMembers_WorkspaceId_UserId ON HouseholdMembers (WorkspaceId, UserId);"
         ];
 
-        foreach (var col in columns)
+        foreach (var sql in statements)
         {
             try
             {
-                await db.Database.ExecuteSqlRawAsync(col, ct);
+                await db.Database.ExecuteSqlRawAsync(sql, ct);
             }
             catch
             {
-                // SQLite throws if column already exists
+                // SQLite throws if column/table already exists
             }
         }
     }
