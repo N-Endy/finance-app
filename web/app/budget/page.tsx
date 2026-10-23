@@ -4,7 +4,10 @@ import { FormEvent, useEffect, useState } from "react";
 import { Shell, Card, Reveal } from "@/components/ui";
 import { api } from "@/lib/api";
 import { failMessage } from "@/lib/feedback";
-import type { Account, AllocationLine, BudgetItem, CalendarItem, Envelope, FamilyRow, IncomePreview, Rule, UnassignedCash } from "@/lib/types";
+import type {
+  Account, AllocationLine, BudgetItem, CalendarItem, Envelope, FamilyRow, IncomePreview, Rule, UnassignedCash,
+  BurnVelocityRadar, AiPaydayAllocationPlan
+} from "@/lib/types";
 
 function major(value: number | null | undefined) {
   return value == null ? "" : String(value);
@@ -34,12 +37,14 @@ export default function BudgetPage() {
   const [showPaydayAssign, setShowPaydayAssign] = useState(false);
   const [paydayAmounts, setPaydayAmounts] = useState<Record<string, string>>({});
   const [selectedFundingAccount, setSelectedFundingAccount] = useState<string>("");
+  const [radar, setRadar] = useState<BurnVelocityRadar | null>(null);
+  const [aiPlan, setAiPlan] = useState<AiPaydayAllocationPlan | null>(null);
 
   const today = new Date();
   const date = today.toISOString().slice(0, 10);
 
   async function load() {
-    const [budgetItems, envs, accs, unassignedDto, salaryLines, familyRows, calendarItems, planRules] = await Promise.all([
+    const [budgetItems, envs, accs, unassignedDto, salaryLines, familyRows, calendarItems, planRules, radarDto] = await Promise.all([
       api.budget(),
       api.envelopes(),
       api.accounts(),
@@ -47,7 +52,8 @@ export default function BudgetPage() {
       api.plan("salary").catch(() => []),
       api.family().catch(() => []),
       api.calendar(today.getFullYear(), today.getMonth() + 1).catch(() => []),
-      api.rules().catch(() => [])
+      api.rules().catch(() => []),
+      api.velocityRadar().catch(() => null)
     ]);
     setItems(budgetItems);
     setEnvelopes(envs);
@@ -57,6 +63,7 @@ export default function BudgetPage() {
     setFamily(familyRows);
     setCalendar(calendarItems);
     setRules(planRules);
+    setRadar(radarDto);
     setDrafts(Object.fromEntries(budgetItems.filter((item) => item.category !== "Betting").map((item) => [item.category, major(item.budget.major)])));
     setFamilyDrafts(Object.fromEntries(familyRows.filter((row) => row.kind === "Recurring").map((row) => [row.id, major(row.amount.major)])));
     if (!fromEnvelopeId && envs.length > 0) setFromEnvelopeId(envs[0].id);
@@ -64,6 +71,29 @@ export default function BudgetPage() {
     if (!selectedFundingAccount && accs.length > 0) {
       const positiveAcc = accs.find((a) => (a.latestBalance?.minor ?? 0) > 0) ?? accs[0];
       setSelectedFundingAccount(positiveAcc.id);
+    }
+  }
+
+  async function handleAiRecommend() {
+    setError(null);
+    setMessage(null);
+    setBusy("ai-alloc");
+    try {
+      const plan = await api.aiRecommendAllocations();
+      setAiPlan(plan);
+      const newAmounts: Record<string, string> = {};
+      plan.recommendations.forEach((r) => {
+        if (r.recommendedAmount > 0) {
+          newAmounts[r.envelopeId] = r.recommendedAmount.toFixed(2);
+        }
+      });
+      setPaydayAmounts(newAmounts);
+      setShowPaydayAssign(true);
+      setMessage(`AI Co-Pilot generated a zero-based allocation: ${plan.summaryRationale}`);
+    } catch (err) {
+      setError(failMessage(err));
+    } finally {
+      setBusy(null);
     }
   }
 
@@ -236,25 +266,65 @@ export default function BudgetPage() {
               </p>
             </div>
             {(unassigned.unassignedCash.minor ?? 0) > 0 && (
-              <button
-                type="button"
-                className="btn"
-                onClick={() => setShowPaydayAssign((v) => !v)}
-                style={{ fontWeight: 600 }}
-              >
-                {showPaydayAssign ? "Hide Allocation Tool" : "Assign Paycheck to Envelopes →"}
-              </button>
+              <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={busy === "ai-alloc"}
+                  onClick={() => void handleAiRecommend()}
+                  style={{
+                    fontWeight: 600,
+                    background: "rgba(16,185,129,0.2)",
+                    border: "1px solid rgba(16,185,129,0.5)"
+                  }}
+                >
+                  {busy === "ai-alloc" ? "Consulting AI Advisor..." : "✨ AI Auto-Fill Allocation"}
+                </button>
+                <button
+                  type="button"
+                  className="btn ghost"
+                  onClick={() => setShowPaydayAssign((v) => !v)}
+                  style={{ fontWeight: 600 }}
+                >
+                  {showPaydayAssign ? "Hide Tool" : "Manual Allocation"}
+                </button>
+              </div>
             )}
           </div>
 
           {showPaydayAssign && (
             <div style={{ marginTop: "1.25rem", paddingTop: "1.25rem", borderTop: "1px solid rgba(255,255,255,0.08)" }}>
-              <h3 style={{ fontSize: "1.05rem", fontWeight: 600, margin: "0 0 0.4rem" }}>
-                Payday Envelope Allocation (&quot;Give Every Money A Job&quot;)
-              </h3>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "0.5rem", marginBottom: "0.4rem" }}>
+                <h3 style={{ fontSize: "1.05rem", fontWeight: 600, margin: 0 }}>
+                  Payday Envelope Allocation (&quot;Give Every Money A Job&quot;)
+                </h3>
+                {aiPlan && (
+                  <span style={{ fontSize: "0.75rem", background: "rgba(16,185,129,0.15)", color: "#10b981", padding: "0.2rem 0.5rem", borderRadius: "4px", fontWeight: 600 }}>
+                    ✨ AI Co-Pilot Active
+                  </span>
+                )}
+              </div>
               <p style={{ fontSize: "0.85rem", color: "var(--muted, #8e9e96)", margin: "0 0 1rem" }}>
                 Distribute liquid funds across your active envelopes. Zero unassigned cash = perfectly balanced ledger.
               </p>
+
+              {aiPlan && (
+                <div style={{
+                  padding: "0.85rem 1rem",
+                  background: "rgba(16,185,129,0.08)",
+                  border: "1px solid rgba(16,185,129,0.25)",
+                  borderRadius: "6px",
+                  marginBottom: "1rem",
+                  fontSize: "0.85rem"
+                }}>
+                  <div style={{ fontWeight: 600, color: "#10b981", marginBottom: "0.2rem" }}>
+                    Allocation Strategy Rationale:
+                  </div>
+                  <div style={{ color: "var(--foreground, #e5e7eb)" }}>
+                    {aiPlan.summaryRationale}
+                  </div>
+                </div>
+              )}
 
               <div style={{ marginBottom: "1rem", maxWidth: "340px" }}>
                 <label style={{ fontSize: "0.8rem", color: "var(--muted, #8e9e96)", display: "block", marginBottom: "0.3rem" }}>
@@ -274,20 +344,28 @@ export default function BudgetPage() {
               </div>
 
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "0.75rem", marginBottom: "1rem" }}>
-                {envelopes.map((env) => (
-                  <div key={env.id} style={{ background: "rgba(0,0,0,0.2)", padding: "0.75rem", borderRadius: "6px", border: "1px solid rgba(255,255,255,0.06)" }}>
-                    <div style={{ fontWeight: 600, fontSize: "0.88rem" }}>{env.name}</div>
-                    <div style={{ fontSize: "0.75rem", color: "var(--muted, #8e9e96)", marginBottom: "0.4rem" }}>{env.purpose || env.class}</div>
-                    <input
-                      type="number"
-                      step="0.01"
-                      placeholder="0.00"
-                      value={paydayAmounts[env.id] ?? ""}
-                      onChange={(e) => setPaydayAmounts((prev) => ({ ...prev, [env.id]: e.target.value }))}
-                      style={{ width: "100%", padding: "0.5rem", borderRadius: "4px", background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)", color: "#fff" }}
-                    />
-                  </div>
-                ))}
+                {envelopes.map((env) => {
+                  const rec = aiPlan?.recommendations.find((r) => r.envelopeId === env.id);
+                  return (
+                    <div key={env.id} style={{ background: "rgba(0,0,0,0.2)", padding: "0.75rem", borderRadius: "6px", border: "1px solid rgba(255,255,255,0.06)" }}>
+                      <div style={{ fontWeight: 600, fontSize: "0.88rem" }}>{env.name}</div>
+                      <div style={{ fontSize: "0.75rem", color: "var(--muted, #8e9e96)", marginBottom: "0.4rem" }}>{env.purpose || env.class}</div>
+                      <input
+                        type="number"
+                        step="0.01"
+                        placeholder="0.00"
+                        value={paydayAmounts[env.id] ?? ""}
+                        onChange={(e) => setPaydayAmounts((prev) => ({ ...prev, [env.id]: e.target.value }))}
+                        style={{ width: "100%", padding: "0.5rem", borderRadius: "4px", background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)", color: "#fff" }}
+                      />
+                      {rec && rec.recommendedAmount > 0 && (
+                        <div style={{ marginTop: "0.35rem", fontSize: "0.72rem", color: "#10b981", lineHeight: 1.3 }}>
+                          💡 {rec.rationale}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
 
               <div style={{ display: "flex", gap: "0.75rem", alignItems: "center" }}>
@@ -303,7 +381,7 @@ export default function BudgetPage() {
                 <button
                   type="button"
                   className="btn ghost"
-                  onClick={() => { setPaydayAmounts({}); setShowPaydayAssign(false); }}
+                  onClick={() => { setPaydayAmounts({}); setShowPaydayAssign(false); setAiPlan(null); }}
                 >
                   Cancel
                 </button>
@@ -311,6 +389,49 @@ export default function BudgetPage() {
             </div>
           )}
         </div>
+      )}
+
+      {/* Burn Velocity Radar */}
+      {radar && radar.items.length > 0 && (
+        <Card title="⚡ Burn Velocity Radar (Pacing Early-Warning)">
+          <p className="sentence" style={{ margin: "0 0 1rem", fontSize: "0.88rem" }}>
+            {radar.overallAssessment} (Day {radar.daysElapsedInMonth} of {radar.totalDaysInMonth})
+          </p>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: "0.75rem", marginBottom: "1.25rem" }}>
+            {radar.items.map((item) => {
+              const isCrit = item.status === "Critical";
+              const isCaut = item.status === "Caution";
+              const badgeBg = isCrit ? "rgba(239,68,68,0.15)" : isCaut ? "rgba(245,158,11,0.15)" : "rgba(16,185,129,0.15)";
+              const badgeColor = isCrit ? "#ef4444" : isCaut ? "#f59e0b" : "#10b981";
+              const borderColor = isCrit ? "rgba(239,68,68,0.3)" : isCaut ? "rgba(245,158,11,0.3)" : "rgba(255,255,255,0.06)";
+
+              return (
+                <div
+                  key={item.envelopeId}
+                  style={{
+                    background: "rgba(0,0,0,0.2)",
+                    padding: "0.85rem",
+                    borderRadius: "8px",
+                    border: `1px solid ${borderColor}`
+                  }}
+                >
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "0.3rem" }}>
+                    <div style={{ fontWeight: 600, fontSize: "0.92rem" }}>{item.envelopeName}</div>
+                    <span style={{ fontSize: "0.7rem", fontWeight: 700, padding: "0.15rem 0.4rem", borderRadius: "4px", background: badgeBg, color: badgeColor }}>
+                      {item.status.toUpperCase()}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: "0.78rem", color: "var(--muted, #8e9e96)", marginBottom: "0.4rem" }}>
+                    {item.remainingAmount.formatted} left / {item.budgetedAmount.formatted} assigned
+                  </div>
+                  <div style={{ fontSize: "0.8rem", lineHeight: 1.35, color: isCrit ? "#fca5a5" : isCaut ? "#fde68a" : "var(--muted, #8e9e96)" }}>
+                    {item.message}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </Card>
       )}
 
       <div className="row" style={{ gap: 8 }}>

@@ -11,10 +11,7 @@ public class OpenAiLedgerClientTests
     {
         var handler = new StubHandler
         {
-            Reply = new HttpResponseMessage(HttpStatusCode.OK)
-            {
-                Content = new StringContent("""{"choices":[{"message":{"content":"MatchPredictor net is recorded."}}]}""", Encoding.UTF8, "application/json")
-            }
+            ResponseBody = """{"choices":[{"message":{"content":"MatchPredictor net is recorded."}}]}"""
         };
         var client = OpenAiLedgerClient.Create(new HttpClient(handler) { BaseAddress = new Uri("https://api.openai.com/") }, "test-key", null);
 
@@ -33,14 +30,15 @@ public class OpenAiLedgerClientTests
     {
         var failing = OpenAiLedgerClient.Create(new HttpClient(new StubHandler
         {
-            Reply = new HttpResponseMessage(HttpStatusCode.InternalServerError)
+            StatusCode = HttpStatusCode.InternalServerError
         })
         { BaseAddress = new Uri("https://api.openai.com/") }, "test-key", "gpt-6-luna");
         Assert.Null(await failing.CompleteAsync("s", "u", CancellationToken.None));
 
         var empty = OpenAiLedgerClient.Create(new HttpClient(new StubHandler
         {
-            Reply = new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("") }
+            StatusCode = HttpStatusCode.OK,
+            ResponseBody = ""
         })
         { BaseAddress = new Uri("https://api.openai.com/") }, "test-key", "gpt-6-luna");
         Assert.Null(await empty.CompleteAsync("s", "u", CancellationToken.None));
@@ -52,13 +50,19 @@ public class OpenAiLedgerClientTests
 
     private sealed class StubHandler : HttpMessageHandler
     {
-        public HttpResponseMessage Reply { get; set; } = new(HttpStatusCode.OK);
+        public HttpStatusCode StatusCode { get; set; } = HttpStatusCode.OK;
+        public string? ResponseBody { get; set; }
         public string? LastBody { get; private set; }
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             LastBody = request.Content is null ? null : await request.Content.ReadAsStringAsync(cancellationToken);
-            return Reply;
+            var resp = new HttpResponseMessage(StatusCode);
+            if (ResponseBody is not null)
+            {
+                resp.Content = new StringContent(ResponseBody, Encoding.UTF8, "application/json");
+            }
+            return resp;
         }
     }
 }

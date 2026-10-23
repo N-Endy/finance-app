@@ -2,7 +2,8 @@ import type {
   Account, ActionItem, AlertItem, AllocationLine, Assistant, AuthStatus, BudgetItem,
   Business, CalendarItem, CounterpartyLoan, Dashboard, Envelope, Explain, ExchangeRate, FamilyRow, FixedAsset, Goal, Holding, IncomePreview,
   Liability, MoneyMapNode, OnboardingTemplate, Pension, Preview, Reconciliation, Report, Retirement, Rule, Settings,
-  SpendingVelocity, StatementParseResult, Subscription, Transaction, UnassignedCash, Violation
+  SpendingVelocity, StatementParseResult, Subscription, Transaction, UnassignedCash, Violation,
+  AiPaydayAllocationPlan, NaturalLanguageParseResult, BurnVelocityRadar, HouseholdWorkspace, HouseholdInviteResult
 } from "@/lib/types";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "";
@@ -119,6 +120,17 @@ export const api = {
   updateFixedAsset: (id: string, body: object) => request(`/api/v1/fixed-assets/${id}`, { method: "PUT", body: JSON.stringify(body) }),
   updateHoldingValuation: (slug: string, body: object) => request<Holding>(`/api/v1/holdings/${slug}/valuation`, { method: "PUT", body: JSON.stringify(body) }),
   rebalanceBudget: (body: object) => request("/api/v1/budget/rebalance", { method: "POST", body: JSON.stringify(body) }),
+  aiRecommendAllocations: () => request<AiPaydayAllocationPlan>("/api/v1/budget/ai-recommendation"),
+  aiParseTx: (input: string, referenceDate?: string) =>
+    request<NaturalLanguageParseResult>("/api/v1/transactions/ai-parse", { method: "POST", body: JSON.stringify({ input, referenceDate }) }),
+  velocityRadar: () => request<BurnVelocityRadar>("/api/v1/budget/velocity-radar"),
+  householdWorkspace: () => request<HouseholdWorkspace>("/api/v1/household"),
+  inviteHouseholdMember: (role: string = "Partner") =>
+    request<HouseholdInviteResult>("/api/v1/household/invite", { method: "POST", body: JSON.stringify({ role }) }),
+  joinHousehold: (token: string) =>
+    request<{ success: boolean; message: string }>("/api/v1/household/join", { method: "POST", body: JSON.stringify({ token }) }),
+  removeHouseholdMember: (userId: string) =>
+    request<{ success: boolean }>(`/api/v1/household/members/${userId}`, { method: "DELETE" }),
   deleteAll: () => request("/api/v1/data", { method: "DELETE" }),
   exportUrl: (format: string) => `${API}/api/v1/exports/${format}`
 };

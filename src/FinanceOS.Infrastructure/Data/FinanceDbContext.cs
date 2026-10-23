@@ -36,10 +36,19 @@ public sealed class FinanceDbContext(DbContextOptions<FinanceDbContext> options)
     public DbSet<PensionAccount> Pensions => Set<PensionAccount>();
     public DbSet<RetirementAssumption> RetirementAssumptions => Set<RetirementAssumption>();
     public DbSet<ActualCharge> ActualCharges => Set<ActualCharge>();
+    public DbSet<HouseholdWorkspace> HouseholdWorkspaces => Set<HouseholdWorkspace>();
+    public DbSet<HouseholdMember> HouseholdMembers => Set<HouseholdMember>();
 
     protected override void OnModelCreating(ModelBuilder model)
     {
         model.Entity<Owner>().HasIndex(x => x.Email).IsUnique();
+        model.Entity<HouseholdWorkspace>().HasIndex(x => x.InviteToken);
+        model.Entity<HouseholdWorkspace>()
+            .HasMany(w => w.Members)
+            .WithOne()
+            .HasForeignKey(m => m.WorkspaceId)
+            .OnDelete(DeleteBehavior.Cascade);
+        model.Entity<HouseholdMember>().HasIndex(x => new { x.WorkspaceId, x.UserId }).IsUnique();
         model.Entity<FinancialAccount>().HasIndex(x => new { x.OwnerId, x.Slug }).IsUnique();
         model.Entity<Envelope>().HasIndex(x => new { x.OwnerId, x.Slug }).IsUnique();
         model.Entity<Category>().HasIndex(x => new { x.OwnerId, x.Slug }).IsUnique();

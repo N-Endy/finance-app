@@ -216,3 +216,89 @@ export type EnvelopeRebalance = {
   notes?: string | null;
 };
 
+// AI Co-Pilot Types
+export type AiEnvelopeRecommendation = {
+  envelopeId: string;
+  envelopeName: string;
+  envelopeClass: string;
+  recommendedAmount: number;
+  rationale: string;
+};
+
+export type AiPaydayAllocationPlan = {
+  unassignedCashToAllocate: number;
+  currency: string;
+  recommendations: AiEnvelopeRecommendation[];
+  totalRecommended: number;
+  summaryRationale: string;
+};
+
+export type NaturalLanguageParseResult = {
+  success: boolean;
+  proposedTransaction?: {
+    date: string;
+    type: "Expense" | "Income" | "Transfer";
+    amount: number;
+    currency: string;
+    accountId: string;
+    counterpartyAccountId?: string | null;
+    envelopeId?: string | null;
+    categoryId?: string | null;
+    merchant?: string | null;
+    description: string;
+    isBusiness: boolean;
+    notes?: string | null;
+  } | null;
+  accountName: string;
+  envelopeName?: string | null;
+  categoryName?: string | null;
+  summary: string;
+  clarifications: string[];
+};
+
+export type EnvelopeBurnRadarItem = {
+  envelopeId: string;
+  envelopeName: string;
+  envelopeClass: string;
+  budgetedAmount: Money;
+  spentSoFar: Money;
+  remainingAmount: Money;
+  dailyBurnRate: number;
+  daysRemainingInCycle: number;
+  projectedDaysToDepletion: number | null;
+  status: "OK" | "Caution" | "Critical";
+  message: string;
+};
+
+export type BurnVelocityRadar = {
+  daysElapsedInMonth: number;
+  totalDaysInMonth: number;
+  items: EnvelopeBurnRadarItem[];
+  overallAssessment: string;
+};
+
+// Household Collaboration Types
+export type HouseholdMember = {
+  userId: string;
+  displayName: string;
+  email: string;
+  role: "Owner" | "Partner" | "Member";
+  joinedAt: string;
+  avatarUrl?: string | null;
+};
+
+export type HouseholdWorkspace = {
+  id: string;
+  name: string;
+  baseCurrency: string;
+  myRole: "Owner" | "Partner" | "Member";
+  members: HouseholdMember[];
+  activeInviteToken?: string | null;
+};
+
+export type HouseholdInviteResult = {
+  token: string;
+  inviteLink: string;
+  expiresAt: string;
+};
+

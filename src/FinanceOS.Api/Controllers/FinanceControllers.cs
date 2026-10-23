@@ -406,6 +406,18 @@ public sealed class FinanceController(FinanceOsService finance) : ControllerBase
     [HttpGet("budget/unassigned")]
     public Task<UnassignedCashDto> Unassigned(CancellationToken ct) => finance.GetUnassignedCashAsync(ct);
 
+    [HttpGet("budget/ai-recommendation")]
+    public Task<AiPaydayAllocationPlanDto> RecommendPaydayAllocation(CancellationToken ct) =>
+        finance.RecommendPaydayAllocationsAsync(ct);
+
+    [HttpPost("transactions/ai-parse")]
+    public Task<NaturalLanguageParseResultDto> ParseNaturalLanguageEntry([FromBody] NaturalLanguageParseRequest request, CancellationToken ct) =>
+        finance.ParseNaturalLanguageEntryAsync(request, ct);
+
+    [HttpGet("budget/velocity-radar")]
+    public Task<BurnVelocityRadarDto> VelocityRadar(CancellationToken ct) =>
+        finance.GetBurnVelocityRadarAsync(ct);
+
     [HttpPost("budget/assign-batch")]
     public async Task<IActionResult> BatchAssign([FromBody] BatchEnvelopeAssignRequest request, CancellationToken ct)
     {
@@ -433,6 +445,25 @@ public sealed class FinanceController(FinanceOsService finance) : ControllerBase
     {
         await finance.DeleteAllDataAsync(ct);
         return Ok();
+    }
+
+    [HttpGet("household")]
+    public Task<HouseholdWorkspaceDto> GetHouseholdWorkspace(CancellationToken ct) =>
+        finance.GetHouseholdWorkspaceAsync(ct);
+
+    [HttpPost("household/invite")]
+    public Task<HouseholdInviteResultDto> CreateHouseholdInvite([FromBody] HouseholdInviteRequest request, CancellationToken ct) =>
+        finance.CreateHouseholdInviteAsync(request.Role, ct);
+
+    [HttpPost("household/join")]
+    public Task<HouseholdJoinResultDto> JoinHousehold([FromBody] HouseholdJoinRequest request, CancellationToken ct) =>
+        finance.JoinHouseholdAsync(request, ct);
+
+    [HttpDelete("household/members/{userId}")]
+    public async Task<IActionResult> RemoveHouseholdMember(Guid userId, CancellationToken ct)
+    {
+        await finance.RemoveHouseholdMemberAsync(userId, ct);
+        return Ok(new { success = true });
     }
 
     [HttpPost("assistant")]

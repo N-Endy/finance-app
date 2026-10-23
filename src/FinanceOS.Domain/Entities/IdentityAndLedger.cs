@@ -22,6 +22,7 @@ public sealed class Owner
     public Currency BaseCurrency { get; set; } = Currency.Ngn;
     public string? Archetype { get; set; }
     public bool OnboardingCompleted { get; set; } = true;
+    public Guid? ActiveWorkspaceId { get; set; }
 }
 
 public sealed class FinancialAccount
@@ -176,4 +177,24 @@ public sealed class ExternalNote
     public string Body { get; set; } = string.Empty;
     public Provenance Provenance { get; set; } = Provenance.LastKnown;
     public DateOnly? AsOf { get; set; }
+}
+
+public sealed class HouseholdWorkspace
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid PrimaryOwnerId { get; set; }
+    public string Name { get; set; } = "Our Household";
+    public string? InviteToken { get; set; }
+    public DateTime? InviteExpiresAtUtc { get; set; }
+    public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
+    public List<HouseholdMember> Members { get; set; } = [];
+}
+
+public sealed class HouseholdMember
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid WorkspaceId { get; set; }
+    public Guid UserId { get; set; }
+    public string Role { get; set; } = "Partner"; // "Owner", "Partner", "Member"
+    public DateTime JoinedAtUtc { get; set; } = DateTime.UtcNow;
 }

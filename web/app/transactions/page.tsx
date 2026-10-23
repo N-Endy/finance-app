@@ -7,13 +7,14 @@ import { OfflineIndicator } from "@/components/offline-indicator";
 import { api } from "@/lib/api";
 import { failMessage } from "@/lib/feedback";
 import { savePendingTransaction, useOfflineQueue } from "@/lib/offline-queue";
-import type { Account, ParsedTransactionDraft, Preview, StatementParseResult, Transaction } from "@/lib/types";
+import type { Account, ParsedTransactionDraft, Preview, StatementParseResult, Transaction, NaturalLanguageParseResult } from "@/lib/types";
 
 export default function TransactionsPage() {
   const [rows, setRows] = useState<Transaction[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [text, setText] = useState("Lunch 4300 from OPay");
   const [preview, setPreview] = useState<Preview | null>(null);
+  const [aiParsed, setAiParsed] = useState<NaturalLanguageParseResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -72,11 +73,78 @@ export default function TransactionsPage() {
     setBusy("preview");
     try {
       setPreview(await api.preview({ text }));
+      setAiParsed(null);
     } catch (err) {
       setError(failMessage(err));
     } finally {
       setBusy(null);
     }
+  }
+
+  async function handleAiParse(event?: FormEvent) {
+    if (event) event.preventDefault();
+    if (!text.trim()) return;
+    setError(null);
+    setMessage(null);
+    setBusy("ai-parse");
+    try {
+      const res = await api.aiParseTx(text);
+      setAiParsed(res);
+      setPreview(null);
+      if (!res.success) {
+        setError(res.summary);
+      }
+    } catch (err) {
+      setError(failMessage(err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function confirmAiParse() {
+    if (!aiParsed?.proposedTransaction) return;
+    setError(null);
+    setMessage(null);
+    setBusy("confirm-ai");
+    try {
+      if (!isOnline) {
+        await savePendingTransaction(aiParsed.proposedTransaction, aiParsed.summary);
+        setAiParsed(null);
+        setText("");
+        setMessage("Saved to offline queue. Will sync automatically when connected.");
+      } else {
+        await api.createTx(aiParsed.proposedTransaction);
+        setAiParsed(null);
+        setText("");
+        await load();
+        setMessage("Recorded successfully via AI Co-Pilot.");
+      }
+    } catch (err) {
+      try {
+        await savePendingTransaction(aiParsed.proposedTransaction, aiParsed.summary);
+        setAiParsed(null);
+        setText("");
+        setMessage("Network error — saved to offline queue.");
+      } catch (e2) {
+        setError(failMessage(e2));
+      }
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  function populateDetailFromAi() {
+    if (!aiParsed?.proposedTransaction) return;
+    const p = aiParsed.proposedTransaction;
+    setDetail({
+      date: p.date,
+      type: p.type,
+      accountId: p.accountId,
+      counterpartyAccountId: p.counterpartyAccountId ?? "",
+      amount: String(p.amount),
+      description: p.description
+    });
+    setShowDetail(true);
   }
 
   async function confirm() {
@@ -326,10 +394,39 @@ export default function TransactionsPage() {
 
       {activeTab === "quick" && (
         <>
-          <Card title="Quick entry">
-            <form className="stack" onSubmit={previewQuick}>
-              <input value={text} onChange={(e) => setText(e.target.value)} placeholder="Lunch 4300 from OPay" />
-              <button className="btn" type="submit" disabled={busy === "preview"}>Parse and preview</button>
+          <Card title="Quick entry & AI Co-Pilot">
+            <p className="sentence" style={{ margin: "0 0 0.75rem", fontSize: "0.85rem" }}>
+              Enter natural language (e.g. <em>&quot;Spent $42.50 at Trader Joe&apos;s for groceries yesterday&quot;</em> or <em>&quot;Sent 15,000 NGN to Kuda from OPay&quot;</em>) or classic shorthand.
+            </p>
+            <form className="stack" onSubmit={handleAiParse}>
+              <input
+                value={text}
+                onChange={(e) => setText(e.target.value)}
+                placeholder="e.g. Spent $35 on Shell fuel from Chase"
+                style={{ fontSize: "0.95rem" }}
+              />
+              <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
+                <button
+                  className="btn"
+                  type="submit"
+                  disabled={busy === "ai-parse"}
+                  style={{
+                    background: "rgba(16,185,129,0.2)",
+                    border: "1px solid rgba(16,185,129,0.5)",
+                    fontWeight: 600
+                  }}
+                >
+                  {busy === "ai-parse" ? "Parsing with AI..." : "✨ Parse with AI Co-Pilot"}
+                </button>
+                <button
+                  className="btn ghost"
+                  type="button"
+                  disabled={busy === "preview"}
+                  onClick={previewQuick}
+                >
+                  {busy === "preview" ? "Checking..." : "Standard Regex Parse"}
+                </button>
+              </div>
             </form>
           </Card>
 
@@ -548,6 +645,77 @@ export default function TransactionsPage() {
       )}
 
       <AskLedger />
+
+      {aiParsed && (
+        <Reveal watch={aiParsed.summary}>
+          <Card title="✨ AI Co-Pilot Transaction Extraction">
+            <div style={{ padding: "0.5rem 0", marginBottom: "0.75rem" }}>
+              <div style={{ fontSize: "1.05rem", fontWeight: 700, color: "var(--foreground, #fff)" }}>
+                {aiParsed.summary}
+              </div>
+              {aiParsed.clarifications.length > 0 && (
+                <div style={{ marginTop: "0.4rem" }}>
+                  {aiParsed.clarifications.map((c, i) => (
+                    <div key={i} style={{ fontSize: "0.8rem", color: "#f59e0b" }}>
+                      💡 {c}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {aiParsed.proposedTransaction && (
+              <div style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+                gap: "0.5rem",
+                padding: "0.75rem",
+                background: "rgba(0,0,0,0.25)",
+                borderRadius: "6px",
+                border: "1px solid rgba(255,255,255,0.08)",
+                marginBottom: "1rem",
+                fontSize: "0.85rem"
+              }}>
+                <div><span style={{ color: "var(--muted, #8e9e96)" }}>Amount:</span> <strong>{aiParsed.proposedTransaction.amount} {aiParsed.proposedTransaction.currency}</strong></div>
+                <div><span style={{ color: "var(--muted, #8e9e96)" }}>Type:</span> <strong>{aiParsed.proposedTransaction.type}</strong></div>
+                <div><span style={{ color: "var(--muted, #8e9e96)" }}>Account:</span> <strong>{aiParsed.accountName}</strong></div>
+                <div><span style={{ color: "var(--muted, #8e9e96)" }}>Envelope:</span> <strong>{aiParsed.envelopeName || "Unassigned"}</strong></div>
+                <div><span style={{ color: "var(--muted, #8e9e96)" }}>Date:</span> <strong>{aiParsed.proposedTransaction.date}</strong></div>
+                <div><span style={{ color: "var(--muted, #8e9e96)" }}>Category:</span> <strong>{aiParsed.categoryName || "General"}</strong></div>
+              </div>
+            )}
+
+            <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap", alignItems: "center" }}>
+              {aiParsed.proposedTransaction && (
+                <button
+                  className="btn"
+                  disabled={busy === "confirm-ai"}
+                  onClick={() => void confirmAiParse()}
+                  style={{ fontWeight: 600 }}
+                >
+                  {busy === "confirm-ai" ? "Recording to ledger..." : "Confirm & Commit to Ledger"}
+                </button>
+              )}
+              {aiParsed.proposedTransaction && (
+                <button
+                  className="btn ghost"
+                  type="button"
+                  onClick={populateDetailFromAi}
+                >
+                  Edit in Detailed Form
+                </button>
+              )}
+              <button
+                className="btn ghost"
+                type="button"
+                onClick={() => setAiParsed(null)}
+              >
+                Dismiss
+              </button>
+            </div>
+          </Card>
+        </Reveal>
+      )}
 
       {preview && (
         <Reveal watch={preview.summary}>

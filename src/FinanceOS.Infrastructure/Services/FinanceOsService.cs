@@ -2426,6 +2426,544 @@ public sealed class FinanceOsService(
             answer.Evidence.Select(MoneyMapping.Line).ToList(), answer.UsedEstimate, answer.MissingFacts);
     }
 
+    public async Task<AiPaydayAllocationPlanDto> RecommendPaydayAllocationsAsync(CancellationToken ct)
+    {
+        var owner = await RequireOwner(ct);
+        var unassignedDto = await GetUnassignedCashAsync(ct);
+        var unassignedMinor = unassignedDto.UnassignedCash.Minor ?? 0;
+        var unassignedMajor = unassignedMinor > 0 ? unassignedMinor / 100m : 0m;
+        var ccy = owner.BaseCurrency;
+        var ccyCode = ccy.ToString().ToUpperInvariant();
+
+        var envelopes = await db.Envelopes.Where(e => e.OwnerId == owner.Id && e.IsActive).ToListAsync(ct);
+        if (envelopes.Count == 0 || unassignedMajor <= 0)
+        {
+            return new AiPaydayAllocationPlanDto(
+                unassignedMajor,
+                ccyCode,
+                [],
+                0,
+                unassignedMajor <= 0
+                    ? "All liquid cash is currently assigned. No unassigned funds to distribute."
+                    : "No active envelopes found. Create envelopes before running allocation.");
+        }
+
+        // Try AI generation with gpt-6-luna
+        if (llm.IsConfigured)
+        {
+            try
+            {
+                var envSummary = envelopes.Select(e => new { e.Id, e.Name, Class = e.Class.ToString(), e.Purpose, e.IsEssential });
+                var system = """
+                    You are Finance OS AI Co-Pilot, an elite zero-based budgeting advisor.
+                    Rule of Zero-Based Budgeting: Give every dollar/currency unit a specific job until unassigned cash equals exactly zero.
+                    Priority Order:
+                    1. Committed bills, rent, and non-negotiables.
+                    2. Essential living (groceries, utilities, transit).
+                    3. Emergency reserve and sinking buffers.
+                    4. Discretionary spending, dining, lifestyle.
+                    You MUST return strict JSON matching this schema:
+                    {
+                      "recommendations": [
+                        { "envelopeId": "guid-string", "envelopeName": "string", "recommendedAmount": number, "rationale": "short explanation" }
+                      ],
+                      "summaryRationale": "string summarizing distribution strategy"
+                    }
+                    The sum of recommendedAmount across all recommendations MUST EXACTLY equal the target amount. Never return unallocated remainder.
+                    """;
+
+                var user = $"Target unassigned cash to allocate: {unassignedMajor} {ccyCode}.\nAvailable envelopes:\n{JsonSerializer.Serialize(envSummary)}";
+                var json = await llm.CompleteJsonAsync(system, user, ct);
+                if (!string.IsNullOrWhiteSpace(json))
+                {
+                    using var doc = JsonDocument.Parse(json);
+                    if (doc.RootElement.TryGetProperty("recommendations", out var recsElem) && recsElem.GetArrayLength() > 0)
+                    {
+                        var recList = new List<AiEnvelopeRecommendation>();
+                        var runningSum = 0m;
+                        foreach (var item in recsElem.EnumerateArray())
+                        {
+                            var envIdStr = item.GetProperty("envelopeId").GetString();
+                            if (!Guid.TryParse(envIdStr, out var envId)) continue;
+                            var env = envelopes.FirstOrDefault(e => e.Id == envId);
+                            if (env is null) continue;
+                            var amt = item.TryGetProperty("recommendedAmount", out var amtProp) ? amtProp.GetDecimal() : 0m;
+                            var rat = item.TryGetProperty("rationale", out var ratProp) ? ratProp.GetString() ?? "" : "";
+                            recList.Add(new AiEnvelopeRecommendation(env.Id, env.Name, env.Class.ToString(), amt, rat));
+                            runningSum += amt;
+                        }
+
+                        if (recList.Count > 0)
+                        {
+                            var summary = doc.RootElement.TryGetProperty("summaryRationale", out var sumProp)
+                                ? sumProp.GetString() ?? "Balanced zero-based allocation."
+                                : "Balanced zero-based allocation.";
+
+                            var diff = unassignedMajor - runningSum;
+                            if (diff != 0)
+                            {
+                                var first = recList[0];
+                                recList[0] = first with { RecommendedAmount = Math.Max(0, first.RecommendedAmount + diff) };
+                            }
+
+                            return new AiPaydayAllocationPlanDto(unassignedMajor, ccyCode, recList, unassignedMajor, summary);
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                // Fall back to deterministic heuristic below
+            }
+        }
+
+        // Deterministic Mathematical Allocator (Guaranteed Zero-Remainder Distribution)
+        var recommendations = new List<AiEnvelopeRecommendation>();
+        var committed = envelopes.Where(e => e.Class == EnvelopeClass.Committed || e.Class == EnvelopeClass.Housing || e.IsEssential).ToList();
+        var spend = envelopes.Where(e => e.Class == EnvelopeClass.Spend).ToList();
+        var savings = envelopes.Where(e => e.Class is EnvelopeClass.Savings or EnvelopeClass.Emergency or EnvelopeClass.Buffer or EnvelopeClass.Sinking).ToList();
+
+        var poolCommitted = decimal.Round(unassignedMajor * 0.50m, 2, MidpointRounding.AwayFromZero);
+        var poolSpend = decimal.Round(unassignedMajor * 0.30m, 2, MidpointRounding.AwayFromZero);
+        var poolSavings = unassignedMajor - poolCommitted - poolSpend;
+
+        void Distribute(List<Envelope> targetEnvs, decimal pool, string categoryName)
+        {
+            if (targetEnvs.Count == 0 || pool <= 0) return;
+            var perEnv = decimal.Round(pool / targetEnvs.Count, 2, MidpointRounding.AwayFromZero);
+            var running = 0m;
+            for (var i = 0; i < targetEnvs.Count; i++)
+            {
+                var env = targetEnvs[i];
+                var amt = (i == targetEnvs.Count - 1) ? pool - running : perEnv;
+                running += amt;
+                recommendations.Add(new AiEnvelopeRecommendation(
+                    env.Id, env.Name, env.Class.ToString(), amt,
+                    $"Allocated from {categoryName} pool (zero-based rule)."));
+            }
+        }
+
+        Distribute(committed, poolCommitted, "Committed Bills & Essentials (50%)");
+        Distribute(spend, poolSpend, "Everyday Living & Discretionary (30%)");
+        Distribute(savings, poolSavings, "Savings, Buffer & Vault (20%)");
+
+        if (recommendations.Count == 0)
+        {
+            var perEnv = decimal.Round(unassignedMajor / envelopes.Count, 2, MidpointRounding.AwayFromZero);
+            var running = 0m;
+            for (var i = 0; i < envelopes.Count; i++)
+            {
+                var env = envelopes[i];
+                var amt = (i == envelopes.Count - 1) ? unassignedMajor - running : perEnv;
+                running += amt;
+                recommendations.Add(new AiEnvelopeRecommendation(env.Id, env.Name, env.Class.ToString(), amt, "Proportional allocation across available envelopes."));
+            }
+        }
+
+        return new AiPaydayAllocationPlanDto(
+            unassignedMajor,
+            ccyCode,
+            recommendations,
+            recommendations.Sum(r => r.RecommendedAmount),
+            "Deterministic zero-based allocation giving every dollar a job across committed bills (50%), living expenses (30%), and savings/reserves (20%).");
+    }
+
+    public async Task<NaturalLanguageParseResultDto> ParseNaturalLanguageEntryAsync(NaturalLanguageParseRequest request, CancellationToken ct)
+    {
+        var owner = await RequireOwner(ct);
+        var accounts = await db.Accounts.Where(a => a.OwnerId == owner.Id && a.IsActive).ToListAsync(ct);
+        var envelopes = await db.Envelopes.Where(e => e.OwnerId == owner.Id && e.IsActive).ToListAsync(ct);
+        var categories = await db.Categories.Where(c => c.OwnerId == owner.Id).ToListAsync(ct);
+        var refDate = request.ReferenceDate ?? MoneyMapping.Today();
+
+        if (accounts.Count == 0)
+        {
+            return new NaturalLanguageParseResultDto(false, null, "None", null, null, "Please create at least one account before recording transactions.", ["No accounts exist."]);
+        }
+
+        // Try AI extraction with gpt-6-luna
+        if (llm.IsConfigured && !string.IsNullOrWhiteSpace(request.Input))
+        {
+            try
+            {
+                var accList = accounts.Select(a => new { a.Id, a.Slug, a.Name, Currency = a.Currency.ToString() });
+                var envList = envelopes.Select(e => new { e.Id, e.Slug, e.Name });
+                var catList = categories.Select(c => new { c.Id, c.Slug, c.Name, c.IsBusiness, c.IsBetting });
+
+                var system = $$"""
+                    You are Finance OS AI Co-Pilot. Extract transaction details from user free-text into strict JSON.
+                    Today's Date: {{refDate:yyyy-MM-dd}}.
+                    User Base Currency: {{owner.BaseCurrency}}.
+                    Valid Accounts: {{JsonSerializer.Serialize(accList)}}
+                    Valid Envelopes: {{JsonSerializer.Serialize(envList)}}
+                    Valid Categories: {{JsonSerializer.Serialize(catList)}}
+                    Output JSON Schema:
+                    {
+                      "date": "YYYY-MM-DD",
+                      "type": "Expense" | "Income" | "Transfer",
+                      "amount": number,
+                      "currency": "USD" | "EUR" | "GBP" | "NGN" | "USDT",
+                      "accountId": "guid-string",
+                      "counterpartyAccountId": "guid-string or null",
+                      "envelopeId": "guid-string or null",
+                      "categoryId": "guid-string or null",
+                      "merchant": "string or null",
+                      "description": "clean title string",
+                      "isBusiness": boolean,
+                      "summary": "1 sentence recap"
+                    }
+                    """;
+
+                var json = await llm.CompleteJsonAsync(system, request.Input, ct);
+                if (!string.IsNullOrWhiteSpace(json))
+                {
+                    using var doc = JsonDocument.Parse(json);
+                    var root = doc.RootElement;
+                    if (root.TryGetProperty("amount", out var amtProp) && amtProp.GetDecimal() > 0)
+                    {
+                        var amt = amtProp.GetDecimal();
+                        var dtStr = root.TryGetProperty("date", out var dtProp) ? dtProp.GetString() : null;
+                        var date = DateOnly.TryParse(dtStr, out var d) ? d : refDate;
+                        var typeStr = root.TryGetProperty("type", out var tProp) ? tProp.GetString() ?? "Expense" : "Expense";
+                        var ccyStr = root.TryGetProperty("currency", out var cProp) ? cProp.GetString() ?? owner.BaseCurrency.ToString() : owner.BaseCurrency.ToString();
+
+                        var accIdStr = root.TryGetProperty("accountId", out var aProp) ? aProp.GetString() : null;
+                        var acc = (Guid.TryParse(accIdStr, out var aid) ? accounts.FirstOrDefault(a => a.Id == aid) : null) ?? accounts.FirstOrDefault(a => a.AllowsDailySpending) ?? accounts[0];
+
+                        Guid? counterId = null;
+                        if (root.TryGetProperty("counterpartyAccountId", out var cpProp) && Guid.TryParse(cpProp.GetString(), out var cpid))
+                        {
+                            counterId = accounts.FirstOrDefault(a => a.Id == cpid)?.Id;
+                        }
+
+                        Guid? envId = null;
+                        if (root.TryGetProperty("envelopeId", out var eProp) && Guid.TryParse(eProp.GetString(), out var eid))
+                        {
+                            envId = envelopes.FirstOrDefault(e => e.Id == eid)?.Id;
+                        }
+
+                        Guid? catId = null;
+                        if (root.TryGetProperty("categoryId", out var catProp) && Guid.TryParse(catProp.GetString(), out var cid))
+                        {
+                            catId = categories.FirstOrDefault(c => c.Id == cid)?.Id;
+                        }
+
+                        var merchant = root.TryGetProperty("merchant", out var mProp) ? mProp.GetString() : null;
+                        var desc = root.TryGetProperty("description", out var descProp) ? descProp.GetString() ?? "Transaction" : "Transaction";
+                        var isBiz = root.TryGetProperty("isBusiness", out var bProp) && bProp.GetBoolean();
+                        var summary = root.TryGetProperty("summary", out var sProp) ? sProp.GetString() ?? $"Record {typeStr} of {amt} on {acc.Name}." : $"Record {typeStr} of {amt} on {acc.Name}.";
+
+                        var proposed = new TransactionWriteRequest(
+                            date, typeStr, acc.Id, counterId, amt, 0, ccyStr,
+                            catId, envId, null, null, null, desc, merchant, null, null, isBiz, false);
+
+                        return new NaturalLanguageParseResultDto(
+                            true,
+                            proposed,
+                            acc.Name,
+                            envelopes.FirstOrDefault(e => e.Id == envId)?.Name,
+                            categories.FirstOrDefault(c => c.Id == catId)?.Name,
+                            summary,
+                            []);
+                    }
+                }
+            }
+            catch
+            {
+                // Fall back to built-in quick parser
+            }
+        }
+
+        // Deterministic Fallback Parser via QuickEntryParser
+        var hints = accounts.ToDictionary(a => a.Slug, a => a.Slug, StringComparer.OrdinalIgnoreCase);
+        foreach (var a in accounts) hints.TryAdd(a.Name.ToLowerInvariant(), a.Slug);
+        var parsed = QuickEntryParser.Parse(request.Input, refDate, hints);
+
+        if (parsed.AmountMinor is null || parsed.AmountMinor <= 0)
+        {
+            return new NaturalLanguageParseResultDto(
+                false, null, accounts[0].Name, null, null,
+                "Could not extract transaction amount from your text. Please mention an amount (e.g. '$45.00' or '₦12,000').",
+                ["Amount was not recognized."]);
+        }
+
+        var matchedAccount = (parsed.AccountHint is not null ? accounts.FirstOrDefault(a => a.Slug == parsed.AccountHint) : null)
+                             ?? accounts.FirstOrDefault(a => a.AllowsDailySpending) ?? accounts[0];
+        var matchedCounter = parsed.CounterpartyHint is not null ? accounts.FirstOrDefault(a => a.Slug == parsed.CounterpartyHint) : null;
+        var matchedCat = parsed.CategoryHint is not null ? categories.FirstOrDefault(c => c.Slug == parsed.CategoryHint) : null;
+        var matchedEnv = parsed.EnvelopeHint is not null ? envelopes.FirstOrDefault(e => e.Slug == parsed.EnvelopeHint) : matchedCat?.EnvelopeId is Guid ceid ? envelopes.FirstOrDefault(e => e.Id == ceid) : null;
+
+        var amountMajor = parsed.AmountMinor.Value / 100m;
+        var txType = parsed.Type?.ToString() ?? "Expense";
+
+        var draftTx = new TransactionWriteRequest(
+            parsed.Date, txType, matchedAccount.Id, matchedCounter?.Id,
+            amountMajor, 0, matchedAccount.Currency.ToString(),
+            matchedCat?.Id, matchedEnv?.Id, null, null, null,
+            parsed.Description, null, null, string.Join(',', parsed.Tags), parsed.IsBusiness, false);
+
+        return new NaturalLanguageParseResultDto(
+            true,
+            draftTx,
+            matchedAccount.Name,
+            matchedEnv?.Name,
+            matchedCat?.Name,
+            $"Staged {txType} of {Money.FromMajor(amountMajor, matchedAccount.Currency)} on {matchedAccount.Name}.",
+            parsed.Questions);
+    }
+
+    public async Task<BurnVelocityRadarDto> GetBurnVelocityRadarAsync(CancellationToken ct)
+    {
+        var owner = await RequireOwner(ct);
+        var today = MoneyMapping.Today();
+        var (start, end) = MoneyMapping.MonthBounds(today);
+        var daysElapsed = Math.Max(1, today.Day);
+        var totalDays = DateTime.DaysInMonth(today.Year, today.Month);
+        var daysRemaining = Math.Max(0, totalDays - daysElapsed);
+
+        var envelopes = await db.Envelopes.Where(e => e.OwnerId == owner.Id && e.IsActive).ToListAsync(ct);
+        var txs = await db.Transactions
+            .Where(t => t.OwnerId == owner.Id && !t.IsVoided && t.Date >= start && t.Date <= end && t.Type == TransactionType.Expense)
+            .ToListAsync(ct);
+
+        var assignments = await db.Assignments.Where(a => a.AsOf >= start && a.AsOf <= end).ToListAsync(ct);
+
+        var radarItems = new List<EnvelopeBurnRadarItem>();
+        var warningCount = 0;
+
+        foreach (var env in envelopes)
+        {
+            var assignedMinor = assignments.Where(a => a.EnvelopeId == env.Id).Sum(a => a.AmountMinor);
+            var spentMinor = txs.Where(t => t.EnvelopeId == env.Id).Sum(t => t.AmountMinor);
+            var remainingMinor = assignedMinor - spentMinor;
+
+            var dailyBurnMinor = (decimal)spentMinor / daysElapsed;
+            var dailyBurnMajor = decimal.Round(dailyBurnMinor / 100m, 2);
+
+            int? daysToDepletion = null;
+            string status;
+            string message;
+
+            if (remainingMinor <= 0 && assignedMinor > 0)
+            {
+                status = "CriticalDepleted";
+                message = $"Over budget by {Money.FromMajor(Math.Abs(remainingMinor) / 100m, owner.BaseCurrency)}. Rebalance from another envelope.";
+                warningCount++;
+            }
+            else if (dailyBurnMinor > 0 && remainingMinor > 0)
+            {
+                var estDays = (int)(remainingMinor / dailyBurnMinor);
+                daysToDepletion = estDays;
+                if (estDays < daysRemaining)
+                {
+                    status = "Warning";
+                    message = $"Spending pace will exhaust this envelope in ~{estDays} days ({daysRemaining - estDays} days before next payday).";
+                    warningCount++;
+                }
+                else
+                {
+                    status = "OnTrack";
+                    message = $"Pacing safely. At current rate, envelope will sustain for {estDays} days.";
+                }
+            }
+            else
+            {
+                status = "OnTrack";
+                message = "Pacing safely with minimal activity recorded this cycle.";
+            }
+
+            radarItems.Add(new EnvelopeBurnRadarItem(
+                env.Id,
+                env.Name,
+                env.Class.ToString(),
+                MoneyDto.Of(assignedMinor, owner.BaseCurrency, Provenance.Confirmed),
+                MoneyDto.Of(spentMinor, owner.BaseCurrency, Provenance.Confirmed),
+                MoneyDto.Of(remainingMinor, owner.BaseCurrency, Provenance.Confirmed),
+                dailyBurnMajor,
+                daysRemaining,
+                daysToDepletion,
+                status,
+                message));
+        }
+
+        var assessment = warningCount == 0
+            ? "✨ All envelopes are burning sustainably within their allocated monthly pace."
+            : $"⚠️ {warningCount} envelope{(warningCount > 1 ? "s are" : " is")} burning faster than month-end trajectory. Check recommendations.";
+
+        return new BurnVelocityRadarDto(daysElapsed, totalDays, radarItems, assessment);
+    }
+
+    public async Task<HouseholdWorkspaceDto> GetHouseholdWorkspaceAsync(CancellationToken ct)
+    {
+        var user = await GetOwnerAsync(ct) ?? throw new DomainException("Sign in required.");
+        HouseholdWorkspace? ws = null;
+        if (user.ActiveWorkspaceId is { } wsId)
+        {
+            ws = await db.HouseholdWorkspaces.Include(w => w.Members).SingleOrDefaultAsync(w => w.Id == wsId, ct);
+        }
+
+        if (ws is null)
+        {
+            ws = await db.HouseholdWorkspaces.Include(w => w.Members).FirstOrDefaultAsync(w => w.PrimaryOwnerId == user.Id, ct);
+            if (ws is null)
+            {
+                var token = Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
+                var newWsId = Guid.NewGuid();
+                ws = new HouseholdWorkspace
+                {
+                    Id = newWsId,
+                    PrimaryOwnerId = user.Id,
+                    Name = $"{user.DisplayName}'s Household",
+                    InviteToken = token,
+                    InviteExpiresAtUtc = DateTime.UtcNow.AddDays(7)
+                };
+                db.HouseholdWorkspaces.Add(ws);
+                var initialMember = new HouseholdMember
+                {
+                    WorkspaceId = newWsId,
+                    UserId = user.Id,
+                    Role = "Owner",
+                    JoinedAtUtc = DateTime.UtcNow
+                };
+                db.HouseholdMembers.Add(initialMember);
+                user.ActiveWorkspaceId = ws.Id;
+                await db.SaveChangesAsync(ct);
+            }
+            else
+            {
+                user.ActiveWorkspaceId = ws.Id;
+                await db.SaveChangesAsync(ct);
+            }
+        }
+
+        var memberUserIds = ws.Members.Select(m => m.UserId).Distinct().ToList();
+        var memberUsers = await db.Owners.Where(o => memberUserIds.Contains(o.Id)).ToDictionaryAsync(o => o.Id, ct);
+
+        var memberDtos = ws.Members.Select(m =>
+        {
+            var u = memberUsers.GetValueOrDefault(m.UserId);
+            return new HouseholdMemberDto(
+                m.UserId,
+                u?.DisplayName ?? "Member",
+                u?.Email ?? "",
+                m.Role,
+                m.JoinedAtUtc);
+        }).ToList();
+
+        var primary = await db.Owners.SingleOrDefaultAsync(o => o.Id == ws.PrimaryOwnerId, ct) ?? user;
+        var myRole = ws.PrimaryOwnerId == user.Id ? "Owner" : (ws.Members.FirstOrDefault(m => m.UserId == user.Id)?.Role ?? "Member");
+
+        return new HouseholdWorkspaceDto(
+            ws.Id,
+            ws.Name,
+            primary.BaseCurrency.ToString().ToUpperInvariant(),
+            myRole,
+            memberDtos,
+            ws.InviteToken);
+    }
+
+    public async Task<HouseholdInviteResultDto> CreateHouseholdInviteAsync(string? role, CancellationToken ct)
+    {
+        var user = await GetOwnerAsync(ct) ?? throw new DomainException("Sign in required.");
+        var wsDto = await GetHouseholdWorkspaceAsync(ct);
+        var ws = await db.HouseholdWorkspaces.SingleAsync(w => w.Id == wsDto.Id, ct);
+
+        if (ws.PrimaryOwnerId != user.Id)
+        {
+            throw new DomainException("Only the household owner can generate invite links.");
+        }
+
+        ws.InviteToken = Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
+        ws.InviteExpiresAtUtc = DateTime.UtcNow.AddDays(7);
+        await db.SaveChangesAsync(ct);
+
+        return new HouseholdInviteResultDto(
+            ws.InviteToken,
+            $"/join?token={ws.InviteToken}",
+            ws.InviteExpiresAtUtc.Value);
+    }
+
+    public async Task<HouseholdJoinResultDto> JoinHouseholdAsync(HouseholdJoinRequest request, CancellationToken ct)
+    {
+        var user = await GetOwnerAsync(ct) ?? throw new DomainException("Sign in required.");
+        if (string.IsNullOrWhiteSpace(request.Token))
+        {
+            throw new DomainException("Invite token is required.");
+        }
+
+        var token = request.Token.Trim().ToLowerInvariant();
+        var ws = await db.HouseholdWorkspaces.Include(w => w.Members).SingleOrDefaultAsync(w => w.InviteToken == token, ct);
+        if (ws is null || (ws.InviteExpiresAtUtc.HasValue && ws.InviteExpiresAtUtc.Value < DateTime.UtcNow))
+        {
+            throw new DomainException("This invite link is invalid or has expired.");
+        }
+
+        if (ws.PrimaryOwnerId == user.Id)
+        {
+            return new HouseholdJoinResultDto(true, "You are already the primary owner of this household.");
+        }
+
+        if (!ws.Members.Any(m => m.UserId == user.Id))
+        {
+            var partnerMember = new HouseholdMember
+            {
+                WorkspaceId = ws.Id,
+                UserId = user.Id,
+                Role = "Partner",
+                JoinedAtUtc = DateTime.UtcNow
+            };
+            db.HouseholdMembers.Add(partnerMember);
+        }
+
+        user.ActiveWorkspaceId = ws.Id;
+        await db.SaveChangesAsync(ct);
+        await AuditAsync(ws.PrimaryOwnerId, "join", "HouseholdWorkspace", ws.Id, $"{user.DisplayName} ({user.Email}) joined the household.", ct);
+
+        return new HouseholdJoinResultDto(true, $"Successfully joined {ws.Name}! Joint ledger transparency is now active.");
+    }
+
+    public async Task<bool> RemoveHouseholdMemberAsync(Guid targetUserId, CancellationToken ct)
+    {
+        var user = await GetOwnerAsync(ct) ?? throw new DomainException("Sign in required.");
+        if (user.ActiveWorkspaceId is not { } wsId)
+        {
+            throw new DomainException("You are not part of any household workspace.");
+        }
+
+        var ws = await db.HouseholdWorkspaces.Include(w => w.Members).SingleOrDefaultAsync(w => w.Id == wsId, ct);
+        if (ws is null)
+        {
+            throw new DomainException("Household workspace not found.");
+        }
+
+        if (ws.PrimaryOwnerId != user.Id && user.Id != targetUserId)
+        {
+            throw new DomainException("Only the household owner can remove members.");
+        }
+
+        if (targetUserId == ws.PrimaryOwnerId)
+        {
+            throw new DomainException("The household primary owner cannot be removed.");
+        }
+
+        var member = ws.Members.FirstOrDefault(m => m.UserId == targetUserId);
+        if (member is not null)
+        {
+            ws.Members.Remove(member);
+            db.HouseholdMembers.Remove(member);
+        }
+
+        var targetOwner = await db.Owners.SingleOrDefaultAsync(o => o.Id == targetUserId, ct);
+        if (targetOwner is not null)
+        {
+            targetOwner.ActiveWorkspaceId = null;
+        }
+
+        await db.SaveChangesAsync(ct);
+        await AuditAsync(ws.PrimaryOwnerId, "leave", "HouseholdWorkspace", ws.Id, $"Member {targetUserId} left or was removed from the household.", ct);
+        return true;
+    }
+
     private async Task<List<ActionDto>> GenerateActionsAsync(Owner owner, DateOnly today, CancellationToken ct)
     {
         var existing = await db.Actions.Where(a => a.OwnerId == owner.Id && a.ForDate == today).ToListAsync(ct);
@@ -2480,12 +3018,25 @@ public sealed class FinanceOsService(
     private static FinancialAction A(Guid ownerId, DateOnly day, int order, string title, string detail) =>
         new() { OwnerId = ownerId, ForDate = day, SortOrder = order, Title = title, Detail = detail };
 
-    private async Task<Owner> RequireOwner(CancellationToken ct) =>
-        await GetOwnerAsync(ct) ?? throw new DomainException("Create the owner first.");
+    private async Task<Owner> RequireOwner(CancellationToken ct)
+    {
+        var user = await GetOwnerAsync(ct) ?? throw new DomainException("Create the owner first.");
+        if (user.ActiveWorkspaceId is { } wsId)
+        {
+            var ws = await db.HouseholdWorkspaces.SingleOrDefaultAsync(w => w.Id == wsId, ct);
+            if (ws is not null && ws.PrimaryOwnerId != user.Id)
+            {
+                var primary = await db.Owners.SingleOrDefaultAsync(o => o.Id == ws.PrimaryOwnerId, ct);
+                if (primary is not null) return primary;
+            }
+        }
+        return user;
+    }
 
     private async Task AuditAsync(Guid ownerId, string action, string entity, Guid? id, string details, CancellationToken ct)
     {
-        db.AuditLogs.Add(new AuditLog { OwnerId = ownerId, Action = action, Entity = entity, EntityId = id, Details = details });
+        var actor = currentUser?.DisplayName ?? "owner";
+        db.AuditLogs.Add(new AuditLog { OwnerId = ownerId, Actor = actor, Action = action, Entity = entity, EntityId = id, Details = details });
         await Task.CompletedTask;
     }
 

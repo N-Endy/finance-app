@@ -283,4 +283,115 @@ public class ApiFlowTests : IClassFixture<WebApplicationFactory<Program>>
         var nnamdiDashboard = await nnamdiClient.GetFromJsonAsync<DashboardDto>("/api/v1/dashboard");
         Assert.NotNull(nnamdiDashboard);
     }
+
+    [Fact]
+    public async Task AiCoPilot_endpoints_operate_seamlessly()
+    {
+        var client = await SignedInClient();
+
+        // 1. Natural Language Parse
+        var parseRes = await client.PostAsJsonAsync("/api/v1/transactions/ai-parse", new NaturalLanguageParseRequest("Spent $25.50 at Blue Bottle for coffee yesterday"));
+        Assert.Equal(HttpStatusCode.OK, parseRes.StatusCode);
+        var parsed = await parseRes.Content.ReadFromJsonAsync<NaturalLanguageParseResultDto>();
+        Assert.NotNull(parsed);
+        // Fallback or LLM should yield a plausible amount and non-empty summary
+        Assert.True(parsed.Success);
+        Assert.NotNull(parsed.ProposedTransaction);
+        Assert.Equal(25.50m, parsed.ProposedTransaction!.Amount);
+
+        // 2. Velocity Radar
+        var radarRes = await client.GetAsync("/api/v1/budget/velocity-radar");
+        Assert.Equal(HttpStatusCode.OK, radarRes.StatusCode);
+        var radar = await radarRes.Content.ReadFromJsonAsync<BurnVelocityRadarDto>();
+        Assert.NotNull(radar);
+        Assert.NotNull(radar.Items);
+
+        // 3. AI Payday Recommendation
+        var recRes = await client.GetAsync("/api/v1/budget/ai-recommendation");
+        Assert.Equal(HttpStatusCode.OK, recRes.StatusCode);
+        var rec = await recRes.Content.ReadFromJsonAsync<AiPaydayAllocationPlanDto>();
+        Assert.NotNull(rec);
+        Assert.NotNull(rec.Recommendations);
+    }
+
+    [Fact]
+    public async Task HouseholdCollaboration_allows_joint_transparency_and_multi_member_attribution()
+    {
+        // 1. Register Alice
+        var aliceClient = _factory.CreateClient(new WebApplicationFactoryClientOptions { HandleCookies = true });
+        var aliceReg = await aliceClient.PostAsJsonAsync("/api/v1/auth/register", new RegisterRequest("Alice Household", "alice_house@example.com", "Password1234!", "USD", "everyday-finances"));
+        Assert.Equal(HttpStatusCode.OK, aliceReg.StatusCode);
+
+        // 2. Alice gets her household workspace
+        var aliceWs = await aliceClient.GetFromJsonAsync<HouseholdWorkspaceDto>("/api/v1/household");
+        Assert.NotNull(aliceWs);
+        Assert.Equal("Owner", aliceWs!.MyRole);
+        Assert.Single(aliceWs.Members);
+
+        // 3. Alice creates an invite link
+        var inviteRes = await aliceClient.PostAsJsonAsync("/api/v1/household/invite", new HouseholdInviteRequest("Partner"));
+        Assert.Equal(HttpStatusCode.OK, inviteRes.StatusCode);
+        var invite = await inviteRes.Content.ReadFromJsonAsync<HouseholdInviteResultDto>();
+        Assert.NotNull(invite);
+        Assert.False(string.IsNullOrWhiteSpace(invite!.Token));
+
+        // 4. Register Bob
+        var bobClient = _factory.CreateClient(new WebApplicationFactoryClientOptions { HandleCookies = true });
+        var bobReg = await bobClient.PostAsJsonAsync("/api/v1/auth/register", new RegisterRequest("Bob Partner", "bob_partner@example.com", "Password1234!", "USD", "everyday-finances"));
+        Assert.Equal(HttpStatusCode.OK, bobReg.StatusCode);
+
+        // 5. Bob joins Alice's household using the invite token
+        var joinRes = await bobClient.PostAsJsonAsync("/api/v1/household/join", new HouseholdJoinRequest(invite.Token));
+        Assert.Equal(HttpStatusCode.OK, joinRes.StatusCode);
+
+        // 6. Check Bob's household status
+        var bobWs = await bobClient.GetFromJsonAsync<HouseholdWorkspaceDto>("/api/v1/household");
+        Assert.NotNull(bobWs);
+        Assert.Equal("Partner", bobWs!.MyRole);
+        Assert.Equal(2, bobWs.Members.Count);
+
+        // 7. Joint ledger transparency:
+        // Bob creates a transaction on the joint account
+        var aliceAccounts = await aliceClient.GetFromJsonAsync<AccountDto[]>("/api/v1/accounts");
+        Assert.NotEmpty(aliceAccounts!);
+        var jointAccount = aliceAccounts![0];
+
+        var today = DateOnly.FromDateTime(DateTime.UtcNow.Date);
+        var bobTxRes = await bobClient.PostAsJsonAsync("/api/v1/transactions", new TransactionWriteRequest(
+            today,
+            "Expense",
+            jointAccount.Id,
+            null,
+            45.00m,
+            0m,
+            "USD",
+            null,
+            null,
+            null,
+            null,
+            null,
+            "Weekly Groceries by Bob",
+            "Trader Joe's",
+            "Joint household dinner groceries",
+            "groceries,household",
+            false,
+            false));
+        Assert.Equal(HttpStatusCode.OK, bobTxRes.StatusCode);
+
+        // 8. Alice immediately sees Bob's transaction on the joint ledger
+        var aliceTxs = await aliceClient.GetFromJsonAsync<TransactionDto[]>("/api/v1/transactions");
+        Assert.NotNull(aliceTxs);
+        var foundGroceries = Assert.Single(aliceTxs!, t => t.Description == "Weekly Groceries by Bob");
+        Assert.Equal(45.00m, foundGroceries.Amount.Major);
+
+        // 9. Alice removes Bob from the household
+        var bobMember = bobWs.Members.First(m => m.Email == "bob_partner@example.com");
+        var removeRes = await aliceClient.DeleteAsync($"/api/v1/household/members/{bobMember.UserId}");
+        Assert.Equal(HttpStatusCode.OK, removeRes.StatusCode);
+
+        // 10. Bob is no longer in Alice's household and reverts to his independent ledger
+        var bobTxsAfterLeave = await bobClient.GetFromJsonAsync<TransactionDto[]>("/api/v1/transactions");
+        Assert.NotNull(bobTxsAfterLeave);
+        Assert.DoesNotContain(bobTxsAfterLeave!, t => t.Description == "Weekly Groceries by Bob");
+    }
 }

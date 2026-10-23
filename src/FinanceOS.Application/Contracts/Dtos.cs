@@ -76,6 +76,82 @@ public sealed record UnassignedCashDto(
     string Sentence,
     bool IsFullyAssigned);
 
+public sealed record AiEnvelopeRecommendation(
+    Guid EnvelopeId,
+    string EnvelopeName,
+    string EnvelopeClass,
+    decimal RecommendedAmount,
+    string Rationale);
+
+public sealed record AiPaydayAllocationPlanDto(
+    decimal UnassignedCashToAllocate,
+    string Currency,
+    IReadOnlyList<AiEnvelopeRecommendation> Recommendations,
+    decimal TotalRecommended,
+    string SummaryRationale);
+
+public sealed record NaturalLanguageParseRequest(
+    string Input,
+    DateOnly? ReferenceDate = null);
+
+public sealed record NaturalLanguageParseResultDto(
+    bool Success,
+    TransactionWriteRequest? ProposedTransaction,
+    string AccountName,
+    string? EnvelopeName,
+    string? CategoryName,
+    string Summary,
+    IReadOnlyList<string> Clarifications);
+
+public sealed record EnvelopeBurnRadarItem(
+    Guid EnvelopeId,
+    string EnvelopeName,
+    string EnvelopeClass,
+    MoneyDto BudgetedAmount,
+    MoneyDto SpentSoFar,
+    MoneyDto RemainingAmount,
+    decimal DailyBurnRate,
+    int DaysRemainingInCycle,
+    int? ProjectedDaysToDepletion,
+    string Status,
+    string Message);
+
+public sealed record BurnVelocityRadarDto(
+    int DaysElapsedInMonth,
+    int TotalDaysInMonth,
+    IReadOnlyList<EnvelopeBurnRadarItem> Items,
+    string OverallAssessment);
+
+public sealed record HouseholdMemberDto(
+    Guid UserId,
+    string DisplayName,
+    string Email,
+    string Role,
+    DateTime JoinedAtUtc);
+
+public sealed record HouseholdWorkspaceDto(
+    Guid Id,
+    string Name,
+    string BaseCurrency,
+    string MyRole,
+    IReadOnlyList<HouseholdMemberDto> Members,
+    string? ActiveInviteToken);
+
+public sealed record HouseholdInviteRequest(
+    string? Role = "Partner");
+
+public sealed record HouseholdInviteResultDto(
+    string Token,
+    string InviteLink,
+    DateTime ExpiresAtUtc);
+
+public sealed record HouseholdJoinRequest(
+    string Token);
+
+public sealed record HouseholdJoinResultDto(
+    bool Success,
+    string Message);
+
 public sealed record AccountDto(
     Guid Id,
     string Slug,
