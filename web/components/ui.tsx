@@ -46,6 +46,29 @@ export function Shell({ children }: { children: React.ReactNode }) {
             ))}
           </div>
         ))}
+        <div style={{ marginTop: "auto", paddingTop: "1.5rem" }}>
+          <button
+            type="button"
+            onClick={async () => {
+              try {
+                await api.logout();
+              } finally {
+                window.location.href = "/login";
+              }
+            }}
+            style={{
+              background: "none",
+              border: "none",
+              color: "var(--muted, #8e9e96)",
+              cursor: "pointer",
+              fontSize: "0.85rem",
+              padding: "0.5rem 0",
+              textAlign: "left"
+            }}
+          >
+            Sign Out
+          </button>
+        </div>
       </nav>
       <main>{children}</main>
       <nav className="bottom-nav" aria-label="Primary">

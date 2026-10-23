@@ -94,7 +94,7 @@ public static class SpendableCalculator
         }
 
         var sentence = spendable == 0
-            ? "Spendable is ₦0."
+            ? $"Spendable is {Money.Zero(currency)}."
             : $"You can spend {Money.FromMajor(spendable / 100m, currency)} from unused daily-spending envelopes.";
 
         return new SpendableResult(spendable, currency, lines, sentence);
@@ -170,11 +170,12 @@ public static class NetWorthCalculator
 {
     public static Explanation Calculate(
         IReadOnlyList<(string Name, long AmountMinor, Currency Currency, Provenance Provenance, bool Include, bool IsExpectedReceivable, bool IsLiability)> items,
-        ExchangeRate? usdToNgn)
+        ExchangeRate? usdToNgn,
+        Currency baseCurrency = Currency.Ngn)
     {
         var lines = new List<ExplainLine>();
-        var confirmedNgn = 0L;
-        var hasConfirmedNgn = false;
+        var confirmedBase = 0L;
+        var hasConfirmedBase = false;
         var excluded = new List<string>();
 
         foreach (var item in items)
@@ -193,7 +194,7 @@ public static class NetWorthCalculator
                 continue;
             }
 
-            if (item.Currency == Currency.Usd)
+            if (baseCurrency == Currency.Ngn && item.Currency == Currency.Usd)
             {
                 if (usdToNgn is null)
                 {
@@ -212,8 +213,8 @@ public static class NetWorthCalculator
                 }
 
                 var converted = (long)decimal.Round(item.AmountMinor * usdToNgn.Rate, 0, MidpointRounding.AwayFromZero);
-                confirmedNgn += item.IsLiability ? -converted : converted;
-                hasConfirmedNgn = true;
+                confirmedBase += item.IsLiability ? -converted : converted;
+                hasConfirmedBase = true;
                 lines.Add(new ExplainLine(item.Name, converted, Currency.Ngn, Provenance.Confirmed,
                     $"Original {Money.FromMajor(item.AmountMinor / 100m, Currency.Usd)} × {usdToNgn.Rate} on {usdToNgn.AsOf:yyyy-MM-dd} (source: {usdToNgn.Source})."));
                 continue;
@@ -227,16 +228,16 @@ public static class NetWorthCalculator
                 continue;
             }
 
-            confirmedNgn += item.IsLiability ? -item.AmountMinor : item.AmountMinor;
-            hasConfirmedNgn = true;
-            lines.Add(new ExplainLine(item.Name, item.AmountMinor, Currency.Ngn, Provenance.Confirmed, null));
+            confirmedBase += item.IsLiability ? -item.AmountMinor : item.AmountMinor;
+            hasConfirmedBase = true;
+            lines.Add(new ExplainLine(item.Name, item.AmountMinor, item.Currency, Provenance.Confirmed, null));
         }
 
         string sentence;
         Provenance provenance;
-        long? result = hasConfirmedNgn ? confirmedNgn : null;
+        long? result = hasConfirmedBase ? confirmedBase : null;
 
-        if (!hasConfirmedNgn)
+        if (!hasConfirmedBase)
         {
             provenance = Provenance.Unknown;
             sentence = excluded.Count == 0
@@ -247,8 +248,8 @@ public static class NetWorthCalculator
         {
             provenance = Provenance.Confirmed;
             sentence = excluded.Count == 0
-                ? $"Confirmed net worth is {Money.FromMajor(confirmedNgn / 100m, Currency.Ngn)}."
-                : $"Confirmed net worth is {Money.FromMajor(confirmedNgn / 100m, Currency.Ngn)}. Excluded from this total: {string.Join(" ", excluded)}";
+                ? $"Confirmed net worth is {Money.FromMajor(confirmedBase / 100m, baseCurrency)}."
+                : $"Confirmed net worth is {Money.FromMajor(confirmedBase / 100m, baseCurrency)}. Excluded from this total: {string.Join(" ", excluded)}";
         }
 
         return new Explanation(

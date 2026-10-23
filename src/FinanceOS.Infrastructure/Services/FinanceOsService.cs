@@ -2,6 +2,7 @@ using System.Globalization;
 using System.IO.Compression;
 using System.Text;
 using System.Text.Json;
+using FinanceOS.Application.Abstractions;
 using FinanceOS.Application.Contracts;
 using FinanceOS.Domain;
 using FinanceOS.Domain.Entities;
@@ -17,24 +18,90 @@ public sealed class FinanceOsService(
     IPasswordHasher<Owner> passwords,
     OpenAiLedgerClient llm,
     FxRateClient fxRates,
-    IBankStatementParserService statementParser)
+    IBankStatementParserService statementParser,
+    ICurrentUser? currentUser = null)
 {
     private static readonly JsonSerializerOptions JsonOpts = new() { WriteIndented = true };
 
-    public async Task<Owner?> GetOwnerAsync(CancellationToken ct) =>
-        await db.Owners.SingleOrDefaultAsync(ct);
+    public async Task<Owner?> GetOwnerAsync(CancellationToken ct)
+    {
+        if (currentUser?.UserId is { } uid)
+        {
+            return await db.Owners.SingleOrDefaultAsync(o => o.Id == uid, ct);
+        }
+        return await db.Owners.FirstOrDefaultAsync(ct);
+    }
 
     public async Task<AuthStatusDto> StatusAsync(bool authenticated, CancellationToken ct)
     {
         var owner = await GetOwnerAsync(ct);
-        return new AuthStatusDto(owner is null, authenticated, owner?.DisplayName);
+        var anyOwner = await db.Owners.AnyAsync(ct);
+        return new AuthStatusDto(
+            !anyOwner,
+            authenticated && owner is not null,
+            owner?.DisplayName,
+            owner?.Email,
+            owner?.BaseCurrency.ToString().ToUpperInvariant() ?? "USD",
+            owner?.OnboardingCompleted ?? true);
+    }
+
+    public async Task<Owner> RegisterAsync(RegisterRequest request, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(request.Email))
+        {
+            throw new DomainException("Email is required.");
+        }
+
+        var email = request.Email.Trim().ToLowerInvariant();
+        if (await db.Owners.AnyAsync(o => o.Email == email, ct))
+        {
+            throw new DomainException("An account with this email already exists.");
+        }
+
+        if (string.IsNullOrWhiteSpace(request.Password) || request.Password.Length < 10)
+        {
+            throw new DomainException("Choose a password of at least 10 characters.");
+        }
+
+        var ccy = TemplateEngine.ParseCurrency(request.BaseCurrency);
+        var hasArchetype = !string.IsNullOrWhiteSpace(request.Archetype);
+        var owner = new Owner
+        {
+            DisplayName = string.IsNullOrWhiteSpace(request.DisplayName) ? "User" : request.DisplayName.Trim(),
+            Email = email,
+            BaseCurrency = ccy,
+            Archetype = request.Archetype,
+            OnboardingCompleted = hasArchetype
+        };
+
+        owner.PasswordHash = passwords.HashPassword(owner, request.Password);
+        db.Owners.Add(owner);
+        await db.SaveChangesAsync(ct);
+
+        if (hasArchetype)
+        {
+            await TemplateEngine.ApplyTemplateAsync(db, owner, request.Archetype!, ccy, 0, null, ct);
+        }
+
+        await AuditAsync(owner.Id, "register", "Owner", owner.Id, $"New user registered with {owner.BaseCurrency}.", ct);
+        return owner;
+    }
+
+    public async Task<Owner> ApplyOnboardingAsync(ApplyOnboardingRequest request, CancellationToken ct)
+    {
+        var owner = await RequireOwner(ct);
+        var ccy = TemplateEngine.ParseCurrency(request.BaseCurrency);
+        await TemplateEngine.ApplyTemplateAsync(db, owner, request.TemplateKey, ccy, request.InitialBalance, request.PrimaryAccountName, ct);
+        await AuditAsync(owner.Id, "onboarding", "Owner", owner.Id, $"Applied onboarding template {request.TemplateKey}.", ct);
+        return owner;
     }
 
     public async Task<Owner> SetupAsync(SetupRequest request, CancellationToken ct)
     {
-        if (await db.Owners.AnyAsync(ct))
+        var email = request.Email.Trim().ToLowerInvariant();
+        if (await db.Owners.AnyAsync(o => o.Email == email, ct))
         {
-            throw new DomainException("This system already has an owner.");
+            throw new DomainException("This email is already registered.");
         }
 
         if (string.IsNullOrWhiteSpace(request.Password) || request.Password.Length < 10)
@@ -146,14 +213,17 @@ public sealed class FinanceOsService(
 
     public async Task<ReconciliationResult> AccountReconciliationAsync(Guid accountId, CancellationToken ct)
     {
-        var account = await db.Accounts.SingleAsync(a => a.Id == accountId, ct);
+        var owner = await RequireOwner(ct);
+        var account = await db.Accounts.SingleOrDefaultAsync(a => a.Id == accountId && a.OwnerId == owner.Id, ct)
+                      ?? throw new DomainException($"Account '{accountId}' not found.");
         return await ReconcileAsync(account, ct);
     }
 
     public async Task AddSnapshotAsync(Guid accountId, SnapshotRequest request, CancellationToken ct)
     {
         var owner = await RequireOwner(ct);
-        var account = await db.Accounts.SingleAsync(a => a.Id == accountId && a.OwnerId == owner.Id, ct);
+        var account = await db.Accounts.SingleOrDefaultAsync(a => a.Id == accountId && a.OwnerId == owner.Id, ct)
+                      ?? throw new DomainException($"Account '{accountId}' not found.");
         var provenance = Enum.Parse<Provenance>(request.Provenance, true);
         var source = SnapshotSource(request.Source);
         db.BalanceSnapshots.Add(new BalanceSnapshot
@@ -173,7 +243,8 @@ public sealed class FinanceOsService(
     public async Task AssignAsync(Guid accountId, AssignmentRequest request, CancellationToken ct)
     {
         var owner = await RequireOwner(ct);
-        var account = await db.Accounts.SingleAsync(a => a.Id == accountId && a.OwnerId == owner.Id, ct);
+        var account = await db.Accounts.SingleOrDefaultAsync(a => a.Id == accountId && a.OwnerId == owner.Id, ct)
+                      ?? throw new DomainException($"Account '{accountId}' not found.");
         var effective = await GetEffectiveAccountBalanceAsync(account, ct);
         if (effective.Minor is null)
         {
@@ -197,6 +268,84 @@ public sealed class FinanceOsService(
             Notes = request.Notes
         });
         await db.SaveChangesAsync(ct);
+    }
+
+    public async Task<UnassignedCashDto> GetUnassignedCashAsync(CancellationToken ct)
+    {
+        var owner = await RequireOwner(ct);
+        var cashAccounts = await db.Accounts
+            .Where(a => a.OwnerId == owner.Id && a.IsActive &&
+                        (a.Role == AccountRole.DailySpending || a.Role == AccountRole.StrategicBuffer ||
+                         a.Role == AccountRole.SavingsVault || a.Role == AccountRole.CashOnHand ||
+                         a.Role == AccountRole.Clearing))
+            .ToListAsync(ct);
+
+        var totalLiquidMinor = 0L;
+        foreach (var acc in cashAccounts)
+        {
+            var effective = await GetEffectiveAccountBalanceAsync(acc, ct);
+            if (effective.Minor is { } m && acc.Currency == owner.BaseCurrency)
+            {
+                totalLiquidMinor += m;
+            }
+        }
+
+        var totalAssignedMinor = await db.Assignments
+            .Join(db.Accounts, a => a.AccountId, acc => acc.Id, (a, acc) => new { a, acc })
+            .Where(x => x.acc.OwnerId == owner.Id && x.a.Currency == owner.BaseCurrency)
+            .SumAsync(x => x.a.AmountMinor, ct);
+
+        var unassignedMinor = totalLiquidMinor - totalAssignedMinor;
+        var totalLiquid = MoneyDto.Of(totalLiquidMinor, owner.BaseCurrency, Provenance.Confirmed);
+        var totalAssigned = MoneyDto.Of(totalAssignedMinor, owner.BaseCurrency, Provenance.Confirmed);
+        var unassigned = MoneyDto.Of(unassignedMinor, owner.BaseCurrency, Provenance.Confirmed);
+
+        string sentence = unassignedMinor switch
+        {
+            > 0 => $"You have {unassigned.Formatted} unassigned liquid cash waiting to be given a job.",
+            0 => $"Every single {owner.BaseCurrency} has a job. Zero-based budget perfectly balanced!",
+            < 0 => $"Alert: You have over-assigned by {Money.FromMajor(Math.Abs(unassignedMinor) / 100m, owner.BaseCurrency)}. Envelopes exceed physical cash."
+        };
+
+        return new UnassignedCashDto(totalLiquid, totalAssigned, unassigned, sentence, unassignedMinor == 0);
+    }
+
+    public async Task BatchAssignAsync(BatchEnvelopeAssignRequest request, CancellationToken ct)
+    {
+        var owner = await RequireOwner(ct);
+        if (request.Assignments is null || request.Assignments.Count == 0) return;
+
+        foreach (var item in request.Assignments)
+        {
+            if (item.Amount <= 0) continue;
+            var account = await db.Accounts.SingleAsync(a => a.Id == item.AccountId && a.OwnerId == owner.Id, ct);
+            var envelope = await db.Envelopes.SingleAsync(e => e.Id == item.EnvelopeId && e.OwnerId == owner.Id, ct);
+            var effective = await GetEffectiveAccountBalanceAsync(account, ct);
+            if (effective.Minor is null)
+            {
+                throw new DomainException($"Cannot assign money in {account.Name} until a balance is recorded.");
+            }
+
+            var existing = await db.Assignments.Where(a => a.AccountId == account.Id).SumAsync(a => a.AmountMinor, ct);
+            var next = Money.FromMajor(item.Amount, account.Currency).MinorUnits;
+            if (existing + next > effective.Minor.Value)
+            {
+                throw new DomainException($"Assigning {Money.FromMajor(item.Amount, account.Currency)} to '{envelope.Name}' exceeds remaining balance in {account.Name}.");
+            }
+
+            db.Assignments.Add(new EnvelopeAssignment
+            {
+                AccountId = account.Id,
+                EnvelopeId = envelope.Id,
+                AmountMinor = next,
+                Currency = account.Currency,
+                AsOf = item.AsOf,
+                Notes = item.Notes
+            });
+        }
+
+        await db.SaveChangesAsync(ct);
+        await AuditAsync(owner.Id, "batch-assign", "EnvelopeAssignment", null, $"Assigned {request.Assignments.Count} envelope allocations.", ct);
     }
 
     public async Task<IReadOnlyList<TransactionDto>> TransactionsAsync(string? account, string? category, bool? business, bool? betting, CancellationToken ct)
@@ -2067,8 +2216,41 @@ public sealed class FinanceOsService(
         var owner = await RequireOwner(ct);
         await PlanSeeder.ClearOwnerPlanAsync(db, owner, ct);
         owner.PlanSeeded = false;
-        await PlanSeeder.SeedAsync(db, owner, ct);
+        if (!string.IsNullOrWhiteSpace(owner.Archetype))
+        {
+            await TemplateEngine.ApplyTemplateAsync(db, owner, owner.Archetype, owner.BaseCurrency, 0, null, ct);
+        }
+        else
+        {
+            await PlanSeeder.SeedAsync(db, owner, ct);
+        }
         await AuditAsync(owner.Id, "reset", "Owner", owner.Id, "User requested delete and reseed.", ct);
+    }
+
+    public async Task<string> ExportDataJsonAsync(CancellationToken ct)
+    {
+        var owner = await RequireOwner(ct);
+        var data = new
+        {
+            ExportedAtUtc = DateTime.UtcNow,
+            Owner = new { owner.DisplayName, owner.Email, BaseCurrency = owner.BaseCurrency.ToString(), owner.CreatedAtUtc },
+            Accounts = await db.Accounts.Where(a => a.OwnerId == owner.Id).ToListAsync(ct),
+            Envelopes = await db.Envelopes.Where(e => e.OwnerId == owner.Id).ToListAsync(ct),
+            Categories = await db.Categories.Where(c => c.OwnerId == owner.Id).ToListAsync(ct),
+            Transactions = await db.Transactions.Include(t => t.Postings).Where(t => t.OwnerId == owner.Id).ToListAsync(ct),
+            Goals = await db.Goals.Where(g => g.OwnerId == owner.Id).ToListAsync(ct),
+            Holdings = await db.Holdings.Where(h => h.OwnerId == owner.Id).ToListAsync(ct),
+            Liabilities = await db.Liabilities.Where(l => l.OwnerId == owner.Id).ToListAsync(ct)
+        };
+        return JsonSerializer.Serialize(data, JsonOpts);
+    }
+
+    public async Task DeleteTenantAccountAsync(CancellationToken ct)
+    {
+        var owner = await RequireOwner(ct);
+        await PlanSeeder.ClearOwnerPlanAsync(db, owner, ct);
+        db.Owners.Remove(owner);
+        await db.SaveChangesAsync(ct);
     }
 
     public async Task<AssistantResponseDto> AskAsync(string message, CancellationToken ct)
@@ -2498,12 +2680,12 @@ public sealed class FinanceOsService(
             .ThenByDescending(r => r.Source == "manual")
             .ThenByDescending(r => r.RecordedAtUtc)
             .FirstOrDefault();
-        var explanation = NetWorthCalculator.Calculate(items, fx);
+        var explanation = NetWorthCalculator.Calculate(items, fx, owner.BaseCurrency);
         return new ExplainDto(explanation.Metric, explanation.Sentence, explanation.Formula,
             explanation.Lines.Select(MoneyMapping.Line).ToList(),
             explanation.ResultMinor is null
-                ? MoneyDto.Unknown("Confirm account and holding balances. Last-known and expected figures are listed in the breakdown.")
-                : MoneyDto.Of(explanation.ResultMinor.Value, Currency.Ngn, explanation.ResultProvenance));
+                ? MoneyDto.Unknown("Confirm account and holding balances. Last-known and expected figures are listed in the breakdown.", owner.BaseCurrency)
+                : MoneyDto.Of(explanation.ResultMinor.Value, owner.BaseCurrency, explanation.ResultProvenance));
     }
 
     private async Task<(MoneyDto Amount, string Sentence, ExplainDto Explain)> BuildSpendableAsync(Owner owner, CancellationToken ct)
@@ -2514,8 +2696,8 @@ public sealed class FinanceOsService(
             .ToListAsync(ct);
         var rows = assignments.Select(x => (
             x.acc.Name, x.acc.Role, x.acc.AllowsDailySpending, x.a.Envelope!.Name, x.a.Envelope.Class, x.a.AmountMinor, x.a.Currency)).ToList();
-        var result = SpendableCalculator.FromAssignments(rows, Currency.Ngn);
-        var amount = MoneyDto.Of(result.SpendableMinor, Currency.Ngn, Provenance.Confirmed);
+        var result = SpendableCalculator.FromAssignments(rows, owner.BaseCurrency);
+        var amount = MoneyDto.Of(result.SpendableMinor, owner.BaseCurrency, Provenance.Confirmed);
         var explain = new ExplainDto("spendable", result.Sentence,
             "Actually spendable = unused spend-class envelopes that sit in a daily-spending account. Clearing, savings, and unassigned money are excluded.",
             result.Lines.Select(MoneyMapping.Line).ToList(), amount);

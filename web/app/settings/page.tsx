@@ -70,11 +70,37 @@ export default function SettingsPage() {
         </Card>
       )}
 
-      <Card title="Export">
-        <div className="row">
-          <a className="btn" href={api.exportUrl("csv")}>CSV</a>
-          <a className="btn ghost" href={api.exportUrl("json")}>JSON</a>
+      <Card title="Export & Data Portability">
+        <p className="sentence">Download your complete financial records in multiple formats for your own records or portability.</p>
+        <div className="row" style={{ marginTop: 8 }}>
+          <a className="btn" href={api.exportUrl("csv")}>CSV Summary</a>
+          <a className="btn ghost" href={api.exportUrl("json")}>JSON Summary</a>
           <a className="btn ghost" href={api.exportUrl("xlsx")}>Excel</a>
+          <a className="btn ghost" href={api.exportDataUrl()} download="financeos-ledger-export.json">Full Ledger Export (JSON)</a>
+        </div>
+      </Card>
+
+      <Card title="Account Lifecycle & Privacy">
+        <p className="sentence">
+          GDPR & Privacy Controls: Permanently purge your account, accounts, transactions, and envelopes from the database.
+        </p>
+        <div style={{ marginTop: 8 }}>
+          <button
+            className="btn warn"
+            type="button"
+            onClick={async () => {
+              if (window.confirm("Are you ABSOLUTELY sure you want to permanently delete your account and all associated ledger data? This cannot be undone.")) {
+                try {
+                  await api.deleteAccount();
+                  window.location.href = "/login";
+                } catch (err) {
+                  setError(failMessage(err));
+                }
+              }
+            }}
+          >
+            Permanently Delete My Account & All Data
+          </button>
         </div>
       </Card>
 

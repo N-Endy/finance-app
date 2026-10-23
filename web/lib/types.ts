@@ -28,7 +28,31 @@ export type Reconciliation = {
   sentence: string;
 };
 
-export type AuthStatus = { needsSetup: boolean; authenticated: boolean; displayName?: string | null };
+export type AuthStatus = {
+  needsSetup: boolean;
+  authenticated: boolean;
+  displayName?: string | null;
+  email?: string | null;
+  baseCurrency?: string;
+  onboardingCompleted?: boolean;
+};
+
+export type OnboardingTemplate = {
+  key: string;
+  name: string;
+  tagline: string;
+  description: string;
+  initialAccounts: string[];
+  initialEnvelopes: string[];
+};
+
+export type UnassignedCash = {
+  totalLiquidCash: Money;
+  totalAssignedToEnvelopes: Money;
+  unassignedCash: Money;
+  sentence: string;
+  isFullyAssigned: boolean;
+};
 
 export type Dashboard = {
   netWorth: Money;

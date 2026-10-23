@@ -34,9 +34,47 @@ public sealed record MoneyDto(
     };
 }
 
-public sealed record AuthStatusDto(bool NeedsSetup, bool Authenticated, string? DisplayName);
+public sealed record AuthStatusDto(
+    bool NeedsSetup,
+    bool Authenticated,
+    string? DisplayName,
+    string? Email = null,
+    string? BaseCurrency = "NGN",
+    bool OnboardingCompleted = true);
 public sealed record SetupRequest(string DisplayName, string Email, string Password);
+public sealed record RegisterRequest(string DisplayName, string Email, string Password, string? BaseCurrency = "USD", string? Archetype = null);
 public sealed record LoginRequest(string Email, string Password);
+
+public sealed record OnboardingTemplateDto(
+    string Key,
+    string Name,
+    string Tagline,
+    string Description,
+    IReadOnlyList<string> InitialAccounts,
+    IReadOnlyList<string> InitialEnvelopes);
+
+public sealed record ApplyOnboardingRequest(
+    string TemplateKey,
+    string BaseCurrency,
+    decimal InitialBalance = 0,
+    string? PrimaryAccountName = null);
+
+public sealed record BatchEnvelopeAssignItem(
+    Guid EnvelopeId,
+    decimal Amount,
+    Guid AccountId,
+    DateOnly AsOf,
+    string? Notes = null);
+
+public sealed record BatchEnvelopeAssignRequest(
+    IReadOnlyList<BatchEnvelopeAssignItem> Assignments);
+
+public sealed record UnassignedCashDto(
+    MoneyDto TotalLiquidCash,
+    MoneyDto TotalAssignedToEnvelopes,
+    MoneyDto UnassignedCash,
+    string Sentence,
+    bool IsFullyAssigned);
 
 public sealed record AccountDto(
     Guid Id,

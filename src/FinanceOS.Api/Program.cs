@@ -1,5 +1,6 @@
 using System.Text.Json.Serialization;
 using System.Threading.RateLimiting;
+using FinanceOS.Api.Services;
 using FinanceOS.Application.Abstractions;
 using FinanceOS.Domain;
 using FinanceOS.Domain.Entities;
@@ -54,6 +55,8 @@ builder.Services.AddHttpClient<FxRateClient>(client =>
     client.BaseAddress = new Uri("https://open.er-api.com/");
     client.Timeout = TimeSpan.FromSeconds(10);
 });
+builder.Services.AddHttpContextAccessor();
+builder.Services.AddScoped<ICurrentUser, CurrentUser>();
 builder.Services.AddScoped<IBankStatementParserService, BankStatementParserService>();
 builder.Services.AddScoped<FinanceOsService>();
 builder.Services.AddScoped<DomainExceptionFilter>();

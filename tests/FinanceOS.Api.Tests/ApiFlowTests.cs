@@ -194,4 +194,93 @@ public class ApiFlowTests : IClassFixture<WebApplicationFactory<Program>>
         opay = Assert.Single(accounts!, a => a.Slug == "opay");
         Assert.Equal(10_000_000, opay.LatestBalance!.Minor);
     }
+
+    [Fact]
+    public async Task MultiTenant_Isolation_And_PaydayAssignment_Flow()
+    {
+        // 1. Register a new universal tenant: Alice in London with USD base currency & 50/30/20 archetype
+        var aliceClient = _factory.CreateClient(new WebApplicationFactoryClientOptions { HandleCookies = true });
+        var regRes = await aliceClient.PostAsJsonAsync("/api/v1/auth/register", new RegisterRequest(
+            "Alice", "alice@example.com", "complex-password-12345", "USD", "fifty_thirty_twenty"));
+        Assert.Equal(HttpStatusCode.OK, regRes.StatusCode);
+
+        var aliceStatus = await regRes.Content.ReadFromJsonAsync<AuthStatusDto>();
+        Assert.NotNull(aliceStatus);
+        Assert.True(aliceStatus!.Authenticated);
+        Assert.Equal("Alice", aliceStatus.DisplayName);
+        Assert.Equal("USD", aliceStatus.BaseCurrency);
+        Assert.True(aliceStatus.OnboardingCompleted);
+
+        // 2. Alice's accounts: should have Primary Checking & Savings & Wealth Vault in USD, NOT Nigerian banks
+        var aliceAccounts = await aliceClient.GetFromJsonAsync<AccountDto[]>("/api/v1/accounts");
+        Assert.NotNull(aliceAccounts);
+        Assert.NotEmpty(aliceAccounts!);
+        Assert.DoesNotContain(aliceAccounts!, a => a.Slug == "opay" || a.Slug == "stanbic");
+        Assert.Contains(aliceAccounts!, a => a.Slug == "primary-checking");
+
+        // 3. Alice's envelopes: should have 50% Needs, 30% Wants, 20% Savings
+        var aliceEnvelopes = await aliceClient.GetFromJsonAsync<EnvelopeDto[]>("/api/v1/envelopes");
+        Assert.NotNull(aliceEnvelopes);
+        Assert.Contains(aliceEnvelopes!, e => e.Slug == "needs-50");
+        Assert.Contains(aliceEnvelopes!, e => e.Slug == "wants-30");
+        Assert.Contains(aliceEnvelopes!, e => e.Slug == "savings-20");
+
+        // 4. Payday "Give Every Dollar A Job" Flow:
+        // Alice deposits $3,000 into Primary Checking
+        var checking = aliceAccounts!.First(a => a.Slug == "primary-checking");
+        var snapRes = await aliceClient.PostAsJsonAsync($"/api/v1/accounts/{checking.Id}/snapshots", new SnapshotRequest(
+            3_000m, "USD", DateOnly.FromDateTime(DateTime.UtcNow.Date), "Confirmed", "Payday direct deposit"));
+        Assert.Equal(HttpStatusCode.OK, snapRes.StatusCode);
+
+        // Unassigned cash should be $3,000
+        var unassignedRes = await aliceClient.GetFromJsonAsync<UnassignedCashDto>("/api/v1/budget/unassigned");
+        Assert.NotNull(unassignedRes);
+        Assert.Equal("$3,000.00", unassignedRes!.UnassignedCash.Formatted);
+        Assert.False(unassignedRes.IsFullyAssigned);
+
+        // Alice assigns every dollar a job:
+        // Needs (50%) -> $1,500, Wants (30%) -> $900, Savings (20%) -> $600
+        var envNeeds = aliceEnvelopes!.First(e => e.Slug == "needs-50");
+        var envWants = aliceEnvelopes!.First(e => e.Slug == "wants-30");
+        var envSavings = aliceEnvelopes!.First(e => e.Slug == "savings-20");
+        var today = DateOnly.FromDateTime(DateTime.UtcNow.Date);
+
+        var assignBatchRes = await aliceClient.PostAsJsonAsync("/api/v1/budget/assign-batch", new BatchEnvelopeAssignRequest(
+        [
+            new BatchEnvelopeAssignItem(envNeeds.Id, 1_500m, checking.Id, today, "Rent & Food allocation"),
+            new BatchEnvelopeAssignItem(envWants.Id, 900m, checking.Id, today, "Leisure & Dining allocation"),
+            new BatchEnvelopeAssignItem(envSavings.Id, 600m, checking.Id, today, "Emergency & ETF allocation")
+        ]));
+        Assert.Equal(HttpStatusCode.OK, assignBatchRes.StatusCode);
+
+        // Check unassigned cash again: should be $0.00, fully assigned!
+        unassignedRes = await aliceClient.GetFromJsonAsync<UnassignedCashDto>("/api/v1/budget/unassigned");
+        Assert.NotNull(unassignedRes);
+        Assert.Equal("$0.00", unassignedRes!.UnassignedCash.Formatted);
+        Assert.True(unassignedRes.IsFullyAssigned);
+
+        // 5. Total Tenant Data Isolation:
+        // Alice cannot access Tenant 1 (Nnamdi)'s accounts
+        var nnamdiClient = await SignedInClient();
+        var nnamdiAccounts = await nnamdiClient.GetFromJsonAsync<AccountDto[]>("/api/v1/accounts");
+        var nnamdiOpay = Assert.Single(nnamdiAccounts!, a => a.Slug == "opay");
+
+        // Alice attempts to get reconciliation on Nnamdi's Opay account -> should fail with 400 DomainException
+        var maliciousAccess = await aliceClient.GetAsync($"/api/v1/accounts/{nnamdiOpay.Id}/reconciliation");
+        Assert.Equal(HttpStatusCode.BadRequest, maliciousAccess.StatusCode);
+
+        // 6. Data Export & Account Deletion:
+        var exportRes = await aliceClient.GetAsync("/api/v1/data/export");
+        Assert.Equal(HttpStatusCode.OK, exportRes.StatusCode);
+        var exportJson = await exportRes.Content.ReadAsStringAsync();
+        Assert.Contains("alice@example.com", exportJson);
+
+        // Alice deletes her account
+        var deleteRes = await aliceClient.DeleteAsync("/api/v1/data/account");
+        Assert.Equal(HttpStatusCode.OK, deleteRes.StatusCode);
+
+        // Nnamdi's data is completely intact!
+        var nnamdiDashboard = await nnamdiClient.GetFromJsonAsync<DashboardDto>("/api/v1/dashboard");
+        Assert.NotNull(nnamdiDashboard);
+    }
 }

@@ -1,8 +1,8 @@
 import type {
   Account, ActionItem, AlertItem, AllocationLine, Assistant, AuthStatus, BudgetItem,
   Business, CalendarItem, CounterpartyLoan, Dashboard, Envelope, Explain, ExchangeRate, FamilyRow, FixedAsset, Goal, Holding, IncomePreview,
-  Liability, MoneyMapNode, Pension, Preview, Reconciliation, Report, Retirement, Rule, Settings,
-  SpendingVelocity, StatementParseResult, Subscription, Transaction, Violation
+  Liability, MoneyMapNode, OnboardingTemplate, Pension, Preview, Reconciliation, Report, Retirement, Rule, Settings,
+  SpendingVelocity, StatementParseResult, Subscription, Transaction, UnassignedCash, Violation
 } from "@/lib/types";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "";
@@ -41,8 +41,15 @@ async function request<T = never>(path: string, init?: RequestInit): Promise<T> 
 export const api = {
   me: () => request<AuthStatus>("/api/v1/auth/me"),
   setup: (body: object) => request("/api/v1/auth/setup", { method: "POST", body: JSON.stringify(body) }),
-  login: (body: object) => request("/api/v1/auth/login", { method: "POST", body: JSON.stringify(body) }),
+  register: (body: object) => request<AuthStatus>("/api/v1/auth/register", { method: "POST", body: JSON.stringify(body) }),
+  login: (body: object) => request<AuthStatus>("/api/v1/auth/login", { method: "POST", body: JSON.stringify(body) }),
   logout: () => request("/api/v1/auth/logout", { method: "POST" }),
+  onboardingTemplates: () => request<OnboardingTemplate[]>("/api/v1/onboarding/templates"),
+  applyOnboarding: (body: object) => request<AuthStatus>("/api/v1/onboarding/apply", { method: "POST", body: JSON.stringify(body) }),
+  unassignedCash: () => request<UnassignedCash>("/api/v1/budget/unassigned"),
+  batchAssign: (assignments: object[]) => request("/api/v1/budget/assign-batch", { method: "POST", body: JSON.stringify({ assignments }) }),
+  deleteAccount: () => request("/api/v1/data/account", { method: "DELETE" }),
+  exportDataUrl: () => `${API}/api/v1/data/export`,
   dashboard: () => request<Dashboard>("/api/v1/dashboard"),
   explain: (metric: string) => request<Explain>(`/api/v1/explain/${metric}`),
   accounts: () => request<Account[]>("/api/v1/accounts"),

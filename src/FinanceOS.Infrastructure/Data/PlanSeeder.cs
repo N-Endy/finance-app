@@ -15,6 +15,13 @@ public static class PlanSeeder
         var owners = await db.Owners.ToListAsync(ct);
         foreach (var owner in owners)
         {
+            var isNnamdi = owner.Email.Equals("nnamdi@local", StringComparison.OrdinalIgnoreCase)
+                           || (owner.DisplayName.Equals("Nnamdi", StringComparison.OrdinalIgnoreCase) && string.IsNullOrEmpty(owner.Archetype));
+            if (!isNnamdi)
+            {
+                continue;
+            }
+
             var note = await db.ExternalNotes.FirstOrDefaultAsync(n => n.OwnerId == owner.Id && n.Topic == SnapshotTopic, ct);
             if (note?.Body == SnapshotName) continue;
             if (owner.PlanSeeded || note is not null)

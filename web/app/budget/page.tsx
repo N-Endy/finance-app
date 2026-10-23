@@ -4,7 +4,7 @@ import { FormEvent, useEffect, useState } from "react";
 import { Shell, Card, Reveal } from "@/components/ui";
 import { api } from "@/lib/api";
 import { failMessage } from "@/lib/feedback";
-import type { AllocationLine, BudgetItem, CalendarItem, Envelope, FamilyRow, IncomePreview, Rule } from "@/lib/types";
+import type { Account, AllocationLine, BudgetItem, CalendarItem, Envelope, FamilyRow, IncomePreview, Rule, UnassignedCash } from "@/lib/types";
 
 function major(value: number | null | undefined) {
   return value == null ? "" : String(value);
@@ -13,6 +13,8 @@ function major(value: number | null | undefined) {
 export default function BudgetPage() {
   const [items, setItems] = useState<BudgetItem[]>([]);
   const [envelopes, setEnvelopes] = useState<Envelope[]>([]);
+  const [accounts, setAccounts] = useState<Account[]>([]);
+  const [unassigned, setUnassigned] = useState<UnassignedCash | null>(null);
   const [salary, setSalary] = useState<AllocationLine[]>([]);
   const [family, setFamily] = useState<FamilyRow[]>([]);
   const [calendar, setCalendar] = useState<CalendarItem[]>([]);
@@ -28,20 +30,29 @@ export default function BudgetPage() {
   const [toEnvelopeId, setToEnvelopeId] = useState("");
   const [rebalanceAmount, setRebalanceAmount] = useState("");
   const [rebalanceNotes, setRebalanceNotes] = useState("");
+
+  const [showPaydayAssign, setShowPaydayAssign] = useState(false);
+  const [paydayAmounts, setPaydayAmounts] = useState<Record<string, string>>({});
+  const [selectedFundingAccount, setSelectedFundingAccount] = useState<string>("");
+
   const today = new Date();
   const date = today.toISOString().slice(0, 10);
 
   async function load() {
-    const [budgetItems, envs, salaryLines, familyRows, calendarItems, planRules] = await Promise.all([
+    const [budgetItems, envs, accs, unassignedDto, salaryLines, familyRows, calendarItems, planRules] = await Promise.all([
       api.budget(),
       api.envelopes(),
-      api.plan("salary"),
-      api.family(),
-      api.calendar(today.getFullYear(), today.getMonth() + 1),
-      api.rules()
+      api.accounts(),
+      api.unassignedCash().catch(() => null),
+      api.plan("salary").catch(() => []),
+      api.family().catch(() => []),
+      api.calendar(today.getFullYear(), today.getMonth() + 1).catch(() => []),
+      api.rules().catch(() => [])
     ]);
     setItems(budgetItems);
     setEnvelopes(envs);
+    setAccounts(accs);
+    setUnassigned(unassignedDto);
     setSalary(salaryLines);
     setFamily(familyRows);
     setCalendar(calendarItems);
@@ -50,6 +61,47 @@ export default function BudgetPage() {
     setFamilyDrafts(Object.fromEntries(familyRows.filter((row) => row.kind === "Recurring").map((row) => [row.id, major(row.amount.major)])));
     if (!fromEnvelopeId && envs.length > 0) setFromEnvelopeId(envs[0].id);
     if (!toEnvelopeId && envs.length > 1) setToEnvelopeId(envs[1].id);
+    if (!selectedFundingAccount && accs.length > 0) {
+      const positiveAcc = accs.find((a) => (a.latestBalance?.minor ?? 0) > 0) ?? accs[0];
+      setSelectedFundingAccount(positiveAcc.id);
+    }
+  }
+
+  async function handleBatchAssign() {
+    if (!selectedFundingAccount) {
+      setError("Please select a funding account with available balance.");
+      return;
+    }
+    const assignments = Object.entries(paydayAmounts)
+      .map(([envId, amountStr]) => ({
+        envelopeId: envId,
+        amount: parseFloat(amountStr) || 0,
+        accountId: selectedFundingAccount,
+        asOf: date,
+        notes: "Payday allocation"
+      }))
+      .filter((a) => a.amount > 0);
+
+    if (assignments.length === 0) {
+      setError("Please enter at least one envelope allocation amount.");
+      return;
+    }
+
+    setError(null);
+    setMessage(null);
+    setBusy("payday-assign");
+
+    try {
+      await api.batchAssign(assignments);
+      await load();
+      setShowPaydayAssign(false);
+      setPaydayAmounts({});
+      setMessage(`Successfully assigned funds across ${assignments.length} envelopes.`);
+    } catch (err) {
+      setError(failMessage(err));
+    } finally {
+      setBusy(null);
+    }
   }
 
   async function handleRebalance(event: FormEvent) {
@@ -146,14 +198,127 @@ export default function BudgetPage() {
 
   return (
     <Shell>
-      <h1>Am I following this month&apos;s plan?</h1>
-      <p className="lede">Budget, actual, and remaining for each category. Transfers are not spending.</p>
+      <h1>Zero-Based Envelope Budgeting</h1>
+      <p className="lede">Give every dollar, pound, or naira a job. Budget, actual, and remaining for each category.</p>
       {message && <p className="sentence">{message}</p>}
       {error && <p className="error">{error}</p>}
 
+      {/* Unassigned Cash & Zero-Based Status Banner */}
+      {unassigned && (
+        <div style={{
+          padding: "1.25rem 1.5rem",
+          borderRadius: "10px",
+          background: (unassigned.unassignedCash.minor ?? 0) > 0
+            ? "rgba(16,185,129,0.12)"
+            : unassigned.isFullyAssigned
+              ? "rgba(255,255,255,0.04)"
+              : "rgba(239,68,68,0.12)",
+          border: (unassigned.unassignedCash.minor ?? 0) > 0
+            ? "1px solid rgba(16,185,129,0.3)"
+            : unassigned.isFullyAssigned
+              ? "1px solid rgba(255,255,255,0.1)"
+              : "1px solid rgba(239,68,68,0.3)",
+          marginBottom: "1.25rem"
+        }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "1rem" }}>
+            <div>
+              <div style={{ fontSize: "0.8rem", textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--muted, #8e9e96)", fontWeight: 600 }}>
+                Zero-Based Cash Allocation Status
+              </div>
+              <div style={{ fontSize: "1.5rem", fontWeight: 700, marginTop: "0.2rem" }}>
+                {unassigned.unassignedCash.formatted}
+                <span style={{ fontSize: "0.85rem", fontWeight: 400, color: "var(--muted, #8e9e96)", marginLeft: "0.5rem" }}>
+                  unassigned to envelopes
+                </span>
+              </div>
+              <p style={{ margin: "0.3rem 0 0", fontSize: "0.88rem", color: "var(--muted, #8e9e96)" }}>
+                {unassigned.sentence}
+              </p>
+            </div>
+            {(unassigned.unassignedCash.minor ?? 0) > 0 && (
+              <button
+                type="button"
+                className="btn"
+                onClick={() => setShowPaydayAssign((v) => !v)}
+                style={{ fontWeight: 600 }}
+              >
+                {showPaydayAssign ? "Hide Allocation Tool" : "Assign Paycheck to Envelopes →"}
+              </button>
+            )}
+          </div>
+
+          {showPaydayAssign && (
+            <div style={{ marginTop: "1.25rem", paddingTop: "1.25rem", borderTop: "1px solid rgba(255,255,255,0.08)" }}>
+              <h3 style={{ fontSize: "1.05rem", fontWeight: 600, margin: "0 0 0.4rem" }}>
+                Payday Envelope Allocation (&quot;Give Every Money A Job&quot;)
+              </h3>
+              <p style={{ fontSize: "0.85rem", color: "var(--muted, #8e9e96)", margin: "0 0 1rem" }}>
+                Distribute liquid funds across your active envelopes. Zero unassigned cash = perfectly balanced ledger.
+              </p>
+
+              <div style={{ marginBottom: "1rem", maxWidth: "340px" }}>
+                <label style={{ fontSize: "0.8rem", color: "var(--muted, #8e9e96)", display: "block", marginBottom: "0.3rem" }}>
+                  Funding Source Account:
+                </label>
+                <select
+                  value={selectedFundingAccount}
+                  onChange={(e) => setSelectedFundingAccount(e.target.value)}
+                  style={{ width: "100%", padding: "0.6rem", borderRadius: "6px", background: "rgba(0,0,0,0.3)", color: "#fff", border: "1px solid rgba(255,255,255,0.15)" }}
+                >
+                  {accounts.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.name} ({a.latestBalance?.formatted ?? "No balance"})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "0.75rem", marginBottom: "1rem" }}>
+                {envelopes.map((env) => (
+                  <div key={env.id} style={{ background: "rgba(0,0,0,0.2)", padding: "0.75rem", borderRadius: "6px", border: "1px solid rgba(255,255,255,0.06)" }}>
+                    <div style={{ fontWeight: 600, fontSize: "0.88rem" }}>{env.name}</div>
+                    <div style={{ fontSize: "0.75rem", color: "var(--muted, #8e9e96)", marginBottom: "0.4rem" }}>{env.purpose || env.class}</div>
+                    <input
+                      type="number"
+                      step="0.01"
+                      placeholder="0.00"
+                      value={paydayAmounts[env.id] ?? ""}
+                      onChange={(e) => setPaydayAmounts((prev) => ({ ...prev, [env.id]: e.target.value }))}
+                      style={{ width: "100%", padding: "0.5rem", borderRadius: "4px", background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)", color: "#fff" }}
+                    />
+                  </div>
+                ))}
+              </div>
+
+              <div style={{ display: "flex", gap: "0.75rem", alignItems: "center" }}>
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={busy === "payday-assign"}
+                  onClick={() => void handleBatchAssign()}
+                  style={{ fontWeight: 600 }}
+                >
+                  {busy === "payday-assign" ? "Saving allocations..." : "Confirm & Assign to Envelopes"}
+                </button>
+                <button
+                  type="button"
+                  className="btn ghost"
+                  onClick={() => { setPaydayAmounts({}); setShowPaydayAssign(false); }}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       <div className="row" style={{ gap: 8 }}>
-        <button className="btn" disabled={busy === "salary"} onClick={() => void previewIncome("salary")}>Preview salary waterfall</button>
-        <button className="btn ghost" disabled={busy === "secondary"} onClick={() => void previewIncome("secondary")}>Preview ₦400k waterfall</button>
+        {salary.length > 0 && (
+          <button className="btn" disabled={busy === "salary"} onClick={() => void previewIncome("salary")}>
+            Preview salary waterfall
+          </button>
+        )}
         <button className="btn ghost" onClick={() => setShowRebalance((v) => !v)}>
           {showRebalance ? "Hide Rebalance" : "Roll with the punches (Rebalance envelopes)"}
         </button>
@@ -188,7 +353,7 @@ export default function BudgetPage() {
                 <input
                   value={rebalanceAmount}
                   onChange={(e) => setRebalanceAmount(e.target.value)}
-                  placeholder="Amount to move (₦)"
+                  placeholder="Amount to move"
                   inputMode="decimal"
                 />
                 <input
@@ -204,6 +369,7 @@ export default function BudgetPage() {
           </Card>
         </Reveal>
       )}
+
       {preview && (
         <Reveal watch={preview.planName}>
           <Card title={preview.planName}>
@@ -235,41 +401,49 @@ export default function BudgetPage() {
         ))}
       </div>
 
-      <Card title="Salary allocation">
-        <table className="table">
-          <tbody>{salary.map((line) => <tr key={line.id}><td>{line.name}</td><td>{line.amount?.formatted ?? "UNKNOWN"}</td><td>{line.rule}</td></tr>)}</tbody>
-        </table>
-      </Card>
+      {salary.length > 0 && (
+        <Card title="Salary allocation waterfall">
+          <table className="table">
+            <tbody>{salary.map((line) => <tr key={line.id}><td>{line.name}</td><td>{line.amount?.formatted ?? "UNKNOWN"}</td><td>{line.rule}</td></tr>)}</tbody>
+          </table>
+        </Card>
+      )}
 
-      <Card title="Family commitments vs one-off support">
-        {family.map((row) => (
-          <div key={row.id} className="stack" style={{ marginBottom: 12 }}>
-            <p className="sentence">{row.recipient} · {row.kind} · {row.amount.formatted} · {row.purpose}</p>
-            {row.kind === "Recurring" && (
-              <form className="row" onSubmit={(event) => saveFamily(event, row)}>
-                <input
-                  value={familyDrafts[row.id] ?? ""}
-                  onChange={(e) => setFamilyDrafts((current) => ({ ...current, [row.id]: e.target.value }))}
-                  inputMode="decimal"
-                  aria-label={`${row.recipient} amount`}
-                />
-                <button className="btn" type="submit" disabled={busy === row.id}>Save</button>
-              </form>
-            )}
-          </div>
-        ))}
-        <p className="lede">Changing a family amount updates the plan. It does not move money between accounts.</p>
-      </Card>
+      {family.length > 0 && (
+        <Card title="Family commitments vs one-off support">
+          {family.map((row) => (
+            <div key={row.id} className="stack" style={{ marginBottom: 12 }}>
+              <p className="sentence">{row.recipient} · {row.kind} · {row.amount.formatted} · {row.purpose}</p>
+              {row.kind === "Recurring" && (
+                <form className="row" onSubmit={(event) => saveFamily(event, row)}>
+                  <input
+                    value={familyDrafts[row.id] ?? ""}
+                    onChange={(e) => setFamilyDrafts((current) => ({ ...current, [row.id]: e.target.value }))}
+                    inputMode="decimal"
+                    aria-label={`${row.recipient} amount`}
+                  />
+                  <button className="btn" type="submit" disabled={busy === row.id}>Save</button>
+                </form>
+              )}
+            </div>
+          ))}
+          <p className="lede">Changing a family amount updates the plan. It does not move money between accounts.</p>
+        </Card>
+      )}
 
-      <Card title="This month on the calendar">
-        {calendar.map((item) => (
-          <p key={item.date + item.title}>{item.date} — {item.title} {item.amount?.formatted ?? ""}</p>
-        ))}
-      </Card>
+      {calendar.length > 0 && (
+        <Card title="This month on the calendar">
+          {calendar.map((item) => (
+            <p key={item.date + item.title}>{item.date} — {item.title} {item.amount?.formatted ?? ""}</p>
+          ))}
+        </Card>
+      )}
 
-      <Card title="Rules">
-        {rules.map((rule) => <p key={rule.id}><strong>{rule.title}.</strong> {rule.action} {rule.control}</p>)}
-      </Card>
+      {rules.length > 0 && (
+        <Card title="Rules">
+          {rules.map((rule) => <p key={rule.id}><strong>{rule.title}.</strong> {rule.action} {rule.control}</p>)}
+        </Card>
+      )}
     </Shell>
   );
 }

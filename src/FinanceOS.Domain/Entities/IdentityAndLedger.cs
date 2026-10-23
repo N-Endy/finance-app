@@ -19,6 +19,9 @@ public sealed class Owner
     public int BusinessPersonalPercent { get; set; } = 30;
     public string? HomeSavingsLockNote { get; set; }
     public DateOnly? HomeSavingsLockUntil { get; set; }
+    public Currency BaseCurrency { get; set; } = Currency.Ngn;
+    public string? Archetype { get; set; }
+    public bool OnboardingCompleted { get; set; } = true;
 }
 
 public sealed class FinancialAccount

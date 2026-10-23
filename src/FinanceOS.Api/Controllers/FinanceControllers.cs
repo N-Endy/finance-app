@@ -26,7 +26,16 @@ public sealed class AuthController(FinanceOsService finance) : ControllerBase
     {
         var owner = await finance.SetupAsync(request, ct);
         await SignIn(owner);
-        return Ok(new AuthStatusDto(false, true, owner.DisplayName));
+        return Ok(new AuthStatusDto(false, true, owner.DisplayName, owner.Email, owner.BaseCurrency.ToString().ToUpperInvariant(), owner.OnboardingCompleted));
+    }
+
+    [HttpPost("register")]
+    [EnableRateLimiting("login")]
+    public async Task<ActionResult<AuthStatusDto>> Register([FromBody] RegisterRequest request, CancellationToken ct)
+    {
+        var owner = await finance.RegisterAsync(request, ct);
+        await SignIn(owner);
+        return Ok(new AuthStatusDto(false, true, owner.DisplayName, owner.Email, owner.BaseCurrency.ToString().ToUpperInvariant(), owner.OnboardingCompleted));
     }
 
     [HttpPost("login")]
@@ -35,7 +44,7 @@ public sealed class AuthController(FinanceOsService finance) : ControllerBase
     {
         var owner = await finance.LoginAsync(request, ct);
         await SignIn(owner);
-        return Ok(new AuthStatusDto(false, true, owner.DisplayName));
+        return Ok(new AuthStatusDto(false, true, owner.DisplayName, owner.Email, owner.BaseCurrency.ToString().ToUpperInvariant(), owner.OnboardingCompleted));
     }
 
     [Authorize]
@@ -391,6 +400,31 @@ public sealed class FinanceController(FinanceOsService finance) : ControllerBase
     public async Task<IActionResult> RebalanceBudget([FromBody] EnvelopeRebalanceRequest request, CancellationToken ct)
     {
         await finance.RebalanceEnvelopesAsync(request, ct);
+        return Ok();
+    }
+
+    [HttpGet("budget/unassigned")]
+    public Task<UnassignedCashDto> Unassigned(CancellationToken ct) => finance.GetUnassignedCashAsync(ct);
+
+    [HttpPost("budget/assign-batch")]
+    public async Task<IActionResult> BatchAssign([FromBody] BatchEnvelopeAssignRequest request, CancellationToken ct)
+    {
+        await finance.BatchAssignAsync(request, ct);
+        return Ok();
+    }
+
+    [HttpGet("data/export")]
+    public async Task<IActionResult> ExportData(CancellationToken ct)
+    {
+        var json = await finance.ExportDataJsonAsync(ct);
+        return File(System.Text.Encoding.UTF8.GetBytes(json), "application/json", "financeos-export.json");
+    }
+
+    [HttpDelete("data/account")]
+    public async Task<IActionResult> DeleteAccount(CancellationToken ct)
+    {
+        await finance.DeleteTenantAccountAsync(ct);
+        await HttpContext.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
         return Ok();
     }
 

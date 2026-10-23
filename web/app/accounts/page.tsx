@@ -4,11 +4,12 @@ import { FormEvent, useEffect, useState } from "react";
 import { Shell, Card, MoneyView, Reveal } from "@/components/ui";
 import { api } from "@/lib/api";
 import { failMessage } from "@/lib/feedback";
+import { formatMinorUnits } from "@/lib/currency";
 import type { Account, Reconciliation } from "@/lib/types";
 
-function naira(minor: number | null | undefined) {
+function formatRecon(minor: number | null | undefined, ccy?: string) {
   if (minor == null) return "UNKNOWN";
-  return `₦${(minor / 100).toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  return formatMinorUnits(minor, ccy ?? "USD");
 }
 
 function today() {
@@ -127,14 +128,14 @@ export default function AccountsPage() {
                   <p className="lede">This is a check, not a balance. Expected closing is opening plus recorded movements. Difference is actual minus expected.</p>
                   <table className="table">
                     <tbody>
-                      <tr><td>Opening — start of the ledger</td><td>{naira(recon.openingMinor)}</td></tr>
-                      <tr><td>Inflows — money recorded in</td><td>{naira(recon.inflowsMinor)}</td></tr>
-                      <tr><td>Outflows — money recorded out</td><td>{naira(recon.outflowsMinor)}</td></tr>
-                      <tr><td>Fees — recorded charges</td><td>{naira(recon.feesMinor)}</td></tr>
-                      <tr><td>Adjustments — recorded corrections</td><td>{naira(recon.adjustmentsMinor)}</td></tr>
-                      <tr><td>Expected closing — opening plus those movements</td><td>{naira(recon.expectedClosingMinor)}</td></tr>
-                      <tr><td>Actual — current balance you entered</td><td>{naira(recon.actualMinor)}</td></tr>
-                      <tr><td>Difference — actual minus expected</td><td>{naira(recon.differenceMinor)}</td></tr>
+                      <tr><td>Opening — start of the ledger</td><td>{formatRecon(recon.openingMinor, target?.latestBalance?.currency ?? target?.latestBalance?.currencyCode)}</td></tr>
+                      <tr><td>Inflows — money recorded in</td><td>{formatRecon(recon.inflowsMinor, target?.latestBalance?.currency ?? target?.latestBalance?.currencyCode)}</td></tr>
+                      <tr><td>Outflows — money recorded out</td><td>{formatRecon(recon.outflowsMinor, target?.latestBalance?.currency ?? target?.latestBalance?.currencyCode)}</td></tr>
+                      <tr><td>Fees — recorded charges</td><td>{formatRecon(recon.feesMinor, target?.latestBalance?.currency ?? target?.latestBalance?.currencyCode)}</td></tr>
+                      <tr><td>Adjustments — recorded corrections</td><td>{formatRecon(recon.adjustmentsMinor, target?.latestBalance?.currency ?? target?.latestBalance?.currencyCode)}</td></tr>
+                      <tr><td>Expected closing — opening plus those movements</td><td>{formatRecon(recon.expectedClosingMinor, target?.latestBalance?.currency ?? target?.latestBalance?.currencyCode)}</td></tr>
+                      <tr><td>Actual — current balance you entered</td><td>{formatRecon(recon.actualMinor, target?.latestBalance?.currency ?? target?.latestBalance?.currencyCode)}</td></tr>
+                      <tr><td>Difference — actual minus expected</td><td>{formatRecon(recon.differenceMinor, target?.latestBalance?.currency ?? target?.latestBalance?.currencyCode)}</td></tr>
                     </tbody>
                   </table>
                   {recon.status === "Incomplete" && (
