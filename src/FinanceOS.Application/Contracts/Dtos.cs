@@ -152,6 +152,77 @@ public sealed record HouseholdJoinResultDto(
     bool Success,
     string Message);
 
+// Phase 4: 30/60/90-Day Cash Flow Forecasting & Runway Radar DTOs
+public sealed record DayForecastPoint(
+    int DayOffset,
+    DateOnly Date,
+    MoneyDto ProjectedCash,
+    MoneyDto InflowsSoFar,
+    MoneyDto OutflowsSoFar);
+
+public sealed record ForecastCommitmentItem(
+    DateOnly Date,
+    string Description,
+    string Type, // "Income" | "Bill" | "Debt" | "Subscription"
+    MoneyDto Amount,
+    string? Category);
+
+public sealed record CashFlowForecastDto(
+    MoneyDto CurrentLiquidCash,
+    MoneyDto MonthlyBurnRate,
+    int? RunwayDays,
+    decimal? RunwayMonths,
+    string RunwayStatus, // "Infinite" | "Healthy" | "Caution" | "Critical"
+    DayForecastPoint Forecast30Days,
+    DayForecastPoint Forecast60Days,
+    DayForecastPoint Forecast90Days,
+    MoneyDto LowestProjectedDip,
+    DateOnly LowestProjectedDipDate,
+    IReadOnlyList<DayForecastPoint> DailyTimeline,
+    IReadOnlyList<ForecastCommitmentItem> UpcomingCommitments,
+    IReadOnlyList<string> StrategicInsights);
+
+// Phase 5: Debt Payoff Engine & Tax Reserve Vault DTOs
+public sealed record DebtPayoffStepDto(
+    Guid LiabilityId,
+    string LiabilityName,
+    string Lender,
+    MoneyDto StartingBalance,
+    decimal InterestRatePercent,
+    int MonthEliminated,
+    DateOnly PayoffDate,
+    MoneyDto TotalInterestPaid);
+
+public sealed record DebtStrategyResultDto(
+    string StrategyName, // "Snowball" | "Avalanche"
+    int TotalMonthsToDebtFree,
+    DateOnly DebtFreeDate,
+    MoneyDto TotalInterestPaid,
+    MoneyDto MonthlyCommitment,
+    IReadOnlyList<DebtPayoffStepDto> PayoffSteps);
+
+public sealed record DebtPayoffSimulationDto(
+    MoneyDto TotalDebtBalance,
+    MoneyDto BaselineMonthlyPayment,
+    MoneyDto ExtraMonthlyPayment,
+    MoneyDto TotalMonthlyPayment,
+    DebtStrategyResultDto Snowball,
+    DebtStrategyResultDto Avalanche,
+    MoneyDto InterestSavedWithAvalanche,
+    int MonthsDifference,
+    string StrategicRecommendation);
+
+public sealed record TaxReserveStatusDto(
+    MoneyDto GrossBusinessRevenueYtd,
+    decimal TargetReservePercent,
+    MoneyDto TargetTaxReserveRequired,
+    MoneyDto CurrentTaxVaultBalance,
+    MoneyDto ReserveShortfallOrSurplus,
+    bool IsAdequatelyFunded,
+    DateOnly NextEstimatedTaxDeadline,
+    int DaysUntilDeadline,
+    string ActionableGuidance);
+
 public sealed record AccountDto(
     Guid Id,
     string Slug,

@@ -466,6 +466,18 @@ public sealed class FinanceController(FinanceOsService finance) : ControllerBase
         return Ok(new { success = true });
     }
 
+    [HttpGet("forecast/cash-flow")]
+    public Task<CashFlowForecastDto> GetCashFlowForecast(CancellationToken ct) =>
+        finance.GetCashFlowForecastAsync(ct);
+
+    [HttpGet("debt/payoff-simulation")]
+    public Task<DebtPayoffSimulationDto> SimulateDebtPayoff([FromQuery] decimal extraMonthly = 0, CancellationToken ct = default) =>
+        finance.SimulateDebtPayoffAsync(extraMonthly, ct);
+
+    [HttpGet("business/tax-reserve")]
+    public Task<TaxReserveStatusDto> GetTaxReserveStatus(CancellationToken ct) =>
+        finance.GetTaxReserveStatusAsync(ct);
+
     [HttpPost("assistant")]
     [EnableRateLimiting("assistant")]
     public Task<AssistantResponseDto> Ask([FromBody] AssistantRequest request, CancellationToken ct) =>

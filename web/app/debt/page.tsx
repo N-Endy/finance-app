@@ -4,11 +4,14 @@ import { FormEvent, useEffect, useState } from "react";
 import { Shell, Card, MoneyView } from "@/components/ui";
 import { api } from "@/lib/api";
 import { failMessage } from "@/lib/feedback";
-import type { CounterpartyLoan, Liability } from "@/lib/types";
+import type { CounterpartyLoan, Liability, DebtPayoffSimulation } from "@/lib/types";
 
 export default function DebtPage() {
   const [liabilities, setLiabilities] = useState<Liability[]>([]);
   const [loans, setLoans] = useState<CounterpartyLoan[]>([]);
+  const [simulation, setSimulation] = useState<DebtPayoffSimulation | null>(null);
+  const [extraMonthly, setExtraMonthly] = useState<string>("0");
+  const [activeStrategy, setActiveStrategy] = useState<"Snowball" | "Avalanche">("Avalanche");
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -46,12 +49,24 @@ export default function DebtPage() {
 
   async function load() {
     try {
-      const [liabList, loanList] = await Promise.all([
+      const extraVal = parseFloat(extraMonthly) || 0;
+      const [liabList, loanList, sim] = await Promise.all([
         api.liabilities().catch(() => []),
-        api.counterpartyLoans().catch(() => [])
+        api.counterpartyLoans().catch(() => []),
+        api.simulateDebtPayoff(extraVal).catch(() => null)
       ]);
       setLiabilities(liabList);
       setLoans(loanList);
+      setSimulation(sim);
+    } catch (err) {
+      setError(failMessage(err));
+    }
+  }
+
+  async function runSimulation(extra: number) {
+    try {
+      const sim = await api.simulateDebtPayoff(extra);
+      setSimulation(sim);
     } catch (err) {
       setError(failMessage(err));
     }
@@ -211,6 +226,144 @@ export default function DebtPage() {
           <p className="sentence">Treated as expected receivables until repaid; not spendable cash.</p>
         </Card>
       </div>
+
+      {/* Debt Payoff Strategy Engine (Snowball vs. Avalanche) */}
+      {simulation && (simulation.totalDebtBalance.minor ?? 0) > 0 && (
+        <Card title="⚡ Debt Payoff Accelerator (Snowball vs. Avalanche)">
+          <p className="sentence" style={{ margin: "0 0 1rem", fontSize: "0.88rem" }}>
+            {simulation.strategicRecommendation}
+          </p>
+
+          <div style={{
+            display: "flex",
+            alignItems: "center",
+            gap: "1rem",
+            padding: "0.85rem 1rem",
+            background: "rgba(0,0,0,0.25)",
+            borderRadius: "8px",
+            border: "1px solid rgba(255,255,255,0.08)",
+            marginBottom: "1rem",
+            flexWrap: "wrap"
+          }}>
+            <div style={{ flex: 1, minWidth: "220px" }}>
+              <label style={{ fontSize: "0.8rem", color: "var(--muted, #8e9e96)", display: "block", marginBottom: "0.25rem" }}>
+                Extra Monthly Payment Towards Principal:
+              </label>
+              <div style={{ display: "flex", gap: "0.5rem" }}>
+                <input
+                  type="number"
+                  step="10"
+                  min="0"
+                  value={extraMonthly}
+                  onChange={(e) => {
+                    setExtraMonthly(e.target.value);
+                    void runSimulation(parseFloat(e.target.value) || 0);
+                  }}
+                  placeholder="0.00"
+                  style={{ width: "160px", padding: "0.45rem" }}
+                />
+                <span style={{ fontSize: "0.85rem", alignSelf: "center", color: "var(--muted, #8e9e96)" }}>
+                  Total Monthly Pool: <strong>{simulation.totalMonthlyPayment.formatted}</strong>
+                </span>
+              </div>
+            </div>
+
+            <div style={{ display: "flex", gap: "0.5rem" }}>
+              <button
+                type="button"
+                className={`btn ${activeStrategy === "Avalanche" ? "" : "ghost"}`}
+                onClick={() => setActiveStrategy("Avalanche")}
+                style={{ fontWeight: 600 }}
+              >
+                Avalanche (Min Interest)
+              </button>
+              <button
+                type="button"
+                className={`btn ${activeStrategy === "Snowball" ? "" : "ghost"}`}
+                onClick={() => setActiveStrategy("Snowball")}
+                style={{ fontWeight: 600 }}
+              >
+                Snowball (Quickest Win)
+              </button>
+            </div>
+          </div>
+
+          {/* Strategy Side-by-Side Comparison */}
+          <div className="grid two" style={{ gap: "1rem", marginBottom: "1.25rem" }}>
+            {/* Avalanche Card */}
+            <div style={{
+              padding: "1rem",
+              borderRadius: "8px",
+              background: activeStrategy === "Avalanche" ? "rgba(16,185,129,0.08)" : "rgba(0,0,0,0.2)",
+              border: activeStrategy === "Avalanche" ? "1px solid rgba(16,185,129,0.3)" : "1px solid rgba(255,255,255,0.06)"
+            }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.4rem" }}>
+                <span style={{ fontWeight: 700, fontSize: "0.95rem" }}>Avalanche Method</span>
+                {(simulation.interestSavedWithAvalanche.minor ?? 0) > 0 && (
+                  <span style={{ fontSize: "0.72rem", background: "rgba(16,185,129,0.15)", color: "#10b981", padding: "0.2rem 0.5rem", borderRadius: "4px", fontWeight: 700 }}>
+                    Saves {simulation.interestSavedWithAvalanche.formatted}
+                  </span>
+                )}
+              </div>
+              <div style={{ fontSize: "1.3rem", fontWeight: 700, marginTop: "0.2rem" }}>
+                Debt-Free: {new Date(simulation.avalanche.debtFreeDate).toLocaleDateString("en-US", { month: "short", year: "numeric" })}
+              </div>
+              <div style={{ fontSize: "0.82rem", color: "var(--muted, #8e9e96)", marginTop: "0.25rem" }}>
+                {simulation.avalanche.totalMonthsToDebtFree} months • Total interest: {simulation.avalanche.totalInterestPaid.formatted}
+              </div>
+            </div>
+
+            {/* Snowball Card */}
+            <div style={{
+              padding: "1rem",
+              borderRadius: "8px",
+              background: activeStrategy === "Snowball" ? "rgba(59,130,246,0.08)" : "rgba(0,0,0,0.2)",
+              border: activeStrategy === "Snowball" ? "1px solid rgba(59,130,246,0.3)" : "1px solid rgba(255,255,255,0.06)"
+            }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.4rem" }}>
+                <span style={{ fontWeight: 700, fontSize: "0.95rem" }}>Snowball Method</span>
+                <span style={{ fontSize: "0.72rem", background: "rgba(59,130,246,0.15)", color: "#60a5fa", padding: "0.2rem 0.5rem", borderRadius: "4px", fontWeight: 700 }}>
+                  Smallest Balance First
+                </span>
+              </div>
+              <div style={{ fontSize: "1.3rem", fontWeight: 700, marginTop: "0.2rem" }}>
+                Debt-Free: {new Date(simulation.snowball.debtFreeDate).toLocaleDateString("en-US", { month: "short", year: "numeric" })}
+              </div>
+              <div style={{ fontSize: "0.82rem", color: "var(--muted, #8e9e96)", marginTop: "0.25rem" }}>
+                {simulation.snowball.totalMonthsToDebtFree} months • Total interest: {simulation.snowball.totalInterestPaid.formatted}
+              </div>
+            </div>
+          </div>
+
+          {/* Payoff Sequence Timeline */}
+          <div style={{ fontSize: "0.85rem", fontWeight: 600, marginBottom: "0.5rem" }}>
+            Target Elimination Sequence ({activeStrategy}):
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "0.5rem" }}>
+            {(activeStrategy === "Avalanche" ? simulation.avalanche.payoffSteps : simulation.snowball.payoffSteps).map((step, idx) => (
+              <div
+                key={step.liabilityId}
+                style={{
+                  padding: "0.6rem 0.8rem",
+                  borderRadius: "6px",
+                  background: "rgba(0,0,0,0.2)",
+                  border: "1px solid rgba(255,255,255,0.05)"
+                }}
+              >
+                <div style={{ fontWeight: 600, fontSize: "0.88rem" }}>
+                  #{idx + 1} {step.liabilityName}
+                </div>
+                <div style={{ fontSize: "0.75rem", color: "var(--muted, #8e9e96)" }}>
+                  {step.startingBalance.formatted} ({step.interestRatePercent}% APR)
+                </div>
+                <div style={{ fontSize: "0.78rem", color: "#10b981", marginTop: "0.2rem" }}>
+                  Eliminated in Month {step.monthEliminated} ({new Date(step.payoffDate).toLocaleDateString("en-US", { month: "short", year: "numeric" })})
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
 
       {showAddLiability && (
         <Card title="Record New Debt or Liability">

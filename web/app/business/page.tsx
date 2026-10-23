@@ -4,7 +4,7 @@ import { FormEvent, useEffect, useState } from "react";
 import { Shell, Card, MoneyView } from "@/components/ui";
 import { api } from "@/lib/api";
 import { failMessage } from "@/lib/feedback";
-import type { Account, Business, Subscription } from "@/lib/types";
+import type { Account, Business, Subscription, TaxReserveStatus } from "@/lib/types";
 
 const CATEGORY_PRESETS = [
   "Hosting",
@@ -24,6 +24,7 @@ export default function BusinessPage() {
   const [data, setData] = useState<Business | null>(null);
   const [subs, setSubs] = useState<Subscription[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
+  const [taxStatus, setTaxStatus] = useState<TaxReserveStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -57,16 +58,18 @@ export default function BusinessPage() {
 
   async function load(currentSlug = selectedSlug) {
     try {
-      const [allBiz, subscriptions, accs] = await Promise.all([
+      const [allBiz, subscriptions, accs, taxDto] = await Promise.all([
         api.businesses().catch(() => []),
         api.subscriptions().catch(() => []),
-        api.accounts().catch(() => [])
+        api.accounts().catch(() => []),
+        api.taxReserveStatus().catch(() => null)
       ]);
 
       const list = allBiz.length > 0 ? allBiz : [await api.business("matchpredictor")];
       setBusinesses(list);
       setSubs(subscriptions);
       setAccounts(accs);
+      setTaxStatus(taxDto);
 
       if (!txForm.accountId && accs.length > 0) {
         setTxForm((prev) => ({ ...prev, accountId: accs[0].id }));
@@ -482,6 +485,43 @@ export default function BusinessPage() {
 
       {data ? (
         <>
+          {/* Tax Reserve Vault Monitor */}
+          {taxStatus && (
+            <div style={{
+              marginTop: 16,
+              padding: "1.25rem 1.5rem",
+              borderRadius: "10px",
+              background: taxStatus.isAdequatelyFunded ? "rgba(16,185,129,0.08)" : "rgba(245,158,11,0.08)",
+              border: taxStatus.isAdequatelyFunded ? "1px solid rgba(16,185,129,0.25)" : "1px solid rgba(245,158,11,0.3)"
+            }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "0.75rem" }}>
+                <div>
+                  <div style={{ fontSize: "0.8rem", textTransform: "uppercase", letterSpacing: "0.05em", color: taxStatus.isAdequatelyFunded ? "#10b981" : "#f59e0b", fontWeight: 700 }}>
+                    Tax Reserve Vault Status ({taxStatus.targetReservePercent}% Withholding Rule)
+                  </div>
+                  <div style={{ fontSize: "1.35rem", fontWeight: 700, marginTop: "0.25rem" }}>
+                    Vault Balance: {taxStatus.currentTaxVaultBalance.formatted}
+                    <span style={{ fontSize: "0.88rem", fontWeight: 400, color: "var(--muted, #8e9e96)", marginLeft: "0.5rem" }}>
+                      / {taxStatus.targetTaxReserveRequired.formatted} required YTD
+                    </span>
+                  </div>
+                  <p style={{ margin: "0.3rem 0 0", fontSize: "0.85rem", color: "var(--muted, #8e9e96)" }}>
+                    {taxStatus.actionableGuidance}
+                  </p>
+                </div>
+                <div style={{ textAlign: "right" }}>
+                  <div style={{ fontSize: "0.75rem", color: "var(--muted, #8e9e96)" }}>Next Estimated Tax Deadline:</div>
+                  <div style={{ fontWeight: 700, fontSize: "1rem", color: "#fff" }}>
+                    {new Date(taxStatus.nextEstimatedTaxDeadline).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+                  </div>
+                  <div style={{ fontSize: "0.78rem", color: taxStatus.daysUntilDeadline < 30 ? "#ef4444" : "#10b981", fontWeight: 600 }}>
+                    {taxStatus.daysUntilDeadline} days remaining
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
           <div className="grid three" style={{ marginTop: 16 }}>
             <Card title={`${data.name} Revenue`}>
               <MoneyView money={data.revenue} large />

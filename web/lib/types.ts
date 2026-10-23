@@ -302,3 +302,81 @@ export type HouseholdInviteResult = {
   expiresAt: string;
 };
 
+// Phase 4: 30/60/90-Day Cash Flow Forecasting & Runway Radar
+export type DayForecastPoint = {
+  dayOffset: number;
+  date: string;
+  projectedCash: Money;
+  inflowsSoFar: Money;
+  outflowsSoFar: Money;
+};
+
+export type ForecastCommitmentItem = {
+  date: string;
+  description: string;
+  type: "Income" | "Bill" | "Debt" | "Subscription";
+  amount: Money;
+  category?: string | null;
+};
+
+export type CashFlowForecast = {
+  currentLiquidCash: Money;
+  monthlyBurnRate: Money;
+  runwayDays: number | null;
+  runwayMonths: number | null;
+  runwayStatus: "Infinite" | "Healthy" | "Caution" | "Critical";
+  forecast30Days: DayForecastPoint;
+  forecast60Days: DayForecastPoint;
+  forecast90Days: DayForecastPoint;
+  lowestProjectedDip: Money;
+  lowestProjectedDipDate: string;
+  dailyTimeline: DayForecastPoint[];
+  upcomingCommitments: ForecastCommitmentItem[];
+  strategicInsights: string[];
+};
+
+// Phase 5: Debt Payoff Engine & Tax Reserve Vault
+export type DebtPayoffStep = {
+  liabilityId: string;
+  liabilityName: string;
+  lender: string;
+  startingBalance: Money;
+  interestRatePercent: number;
+  monthEliminated: number;
+  payoffDate: string;
+  totalInterestPaid: Money;
+};
+
+export type DebtStrategyResult = {
+  strategyName: "Snowball" | "Avalanche";
+  totalMonthsToDebtFree: number;
+  debtFreeDate: string;
+  totalInterestPaid: Money;
+  monthlyCommitment: Money;
+  payoffSteps: DebtPayoffStep[];
+};
+
+export type DebtPayoffSimulation = {
+  totalDebtBalance: Money;
+  baselineMonthlyPayment: Money;
+  extraMonthlyPayment: Money;
+  totalMonthlyPayment: Money;
+  snowball: DebtStrategyResult;
+  avalanche: DebtStrategyResult;
+  interestSavedWithAvalanche: Money;
+  monthsDifference: number;
+  strategicRecommendation: string;
+};
+
+export type TaxReserveStatus = {
+  grossBusinessRevenueYtd: Money;
+  targetReservePercent: number;
+  targetTaxReserveRequired: Money;
+  currentTaxVaultBalance: Money;
+  reserveShortfallOrSurplus: Money;
+  isAdequatelyFunded: boolean;
+  nextEstimatedTaxDeadline: string;
+  daysUntilDeadline: number;
+  actionableGuidance: string;
+};
+

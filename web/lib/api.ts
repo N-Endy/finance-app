@@ -3,7 +3,8 @@ import type {
   Business, CalendarItem, CounterpartyLoan, Dashboard, Envelope, Explain, ExchangeRate, FamilyRow, FixedAsset, Goal, Holding, IncomePreview,
   Liability, MoneyMapNode, OnboardingTemplate, Pension, Preview, Reconciliation, Report, Retirement, Rule, Settings,
   SpendingVelocity, StatementParseResult, Subscription, Transaction, UnassignedCash, Violation,
-  AiPaydayAllocationPlan, NaturalLanguageParseResult, BurnVelocityRadar, HouseholdWorkspace, HouseholdInviteResult
+  AiPaydayAllocationPlan, NaturalLanguageParseResult, BurnVelocityRadar, HouseholdWorkspace, HouseholdInviteResult,
+  CashFlowForecast, DebtPayoffSimulation, TaxReserveStatus
 } from "@/lib/types";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "";
@@ -131,6 +132,10 @@ export const api = {
     request<{ success: boolean; message: string }>("/api/v1/household/join", { method: "POST", body: JSON.stringify({ token }) }),
   removeHouseholdMember: (userId: string) =>
     request<{ success: boolean }>(`/api/v1/household/members/${userId}`, { method: "DELETE" }),
+  cashFlowForecast: () => request<CashFlowForecast>("/api/v1/forecast/cash-flow"),
+  simulateDebtPayoff: (extraMonthly: number = 0) =>
+    request<DebtPayoffSimulation>(`/api/v1/debt/payoff-simulation?extraMonthly=${extraMonthly}`),
+  taxReserveStatus: () => request<TaxReserveStatus>("/api/v1/business/tax-reserve"),
   deleteAll: () => request("/api/v1/data", { method: "DELETE" }),
   exportUrl: (format: string) => `${API}/api/v1/exports/${format}`
 };

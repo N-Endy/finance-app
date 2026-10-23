@@ -2964,6 +2964,365 @@ public sealed class FinanceOsService(
         return true;
     }
 
+    public async Task<CashFlowForecastDto> GetCashFlowForecastAsync(CancellationToken ct)
+    {
+        var owner = await RequireOwner(ct);
+        var today = MoneyMapping.Today();
+        var ccy = owner.BaseCurrency;
+
+        // 1. Current liquid cash
+        var accounts = await db.Accounts.Where(a => a.OwnerId == owner.Id && a.IsActive).ToListAsync(ct);
+        var liquidAccounts = accounts.Where(a => a.Role != AccountRole.InvestmentBroker).ToList();
+        var liquidCashMinor = 0L;
+        foreach (var acc in liquidAccounts)
+        {
+            var bal = await GetEffectiveAccountBalanceAsync(acc, ct);
+            if (bal.Minor.HasValue && bal.Minor.Value > 0)
+            {
+                liquidCashMinor += bal.Minor.Value;
+            }
+        }
+
+        // 2. Trailing 30-day burn & income
+        var monthAgo = today.AddDays(-30);
+        var trailingExpenses = await db.Transactions
+            .Where(t => t.OwnerId == owner.Id && !t.IsVoided && t.Date >= monthAgo && t.Date <= today && t.Type == TransactionType.Expense)
+            .SumAsync(t => (long?)t.AmountMinor, ct) ?? 0L;
+
+        var trailingIncome = await db.Transactions
+            .Where(t => t.OwnerId == owner.Id && !t.IsVoided && t.Date >= monthAgo && t.Date <= today && t.Type == TransactionType.Income)
+            .SumAsync(t => (long?)t.AmountMinor, ct) ?? 0L;
+
+        var envelopeMonthlySum = await db.Envelopes
+            .Where(e => e.OwnerId == owner.Id && e.IsActive)
+            .CountAsync(ct) * 250_00m;
+        var monthlyBurnMinor = trailingExpenses > 0 ? trailingExpenses : (long)(envelopeMonthlySum * 100m);
+        if (monthlyBurnMinor <= 0) monthlyBurnMinor = 1_000_00L;
+
+        var dailyBaselineBurn = monthlyBurnMinor / 30m;
+
+        // 3. Commitments (Subscriptions, Liabilities payments)
+        var subscriptions = await db.Subscriptions.Where(s => s.OwnerId == owner.Id && s.IsActive).ToListAsync(ct);
+        var liabilities = await db.Liabilities.Where(l => l.OwnerId == owner.Id && l.BalanceMinor > 0).ToListAsync(ct);
+
+        var commitments = new List<ForecastCommitmentItem>();
+        var timeline = new List<DayForecastPoint>();
+
+        var runningBalance = (decimal)liquidCashMinor;
+        var runningInflows = 0m;
+        var runningOutflows = 0m;
+        var lowestDip = runningBalance;
+        var lowestDipDate = today;
+
+        DayForecastPoint point30 = null!;
+        DayForecastPoint point60 = null!;
+        DayForecastPoint point90 = null!;
+
+        for (var offset = 1; offset <= 90; offset++)
+        {
+            var date = today.AddDays(offset);
+            var dayInflows = 0m;
+            var dayOutflows = dailyBaselineBurn;
+
+            // Inflow: Salary/Income simulation
+            if (date.Day == 27 && trailingIncome > 0)
+            {
+                dayInflows += trailingIncome;
+                if (offset <= 30)
+                {
+                    commitments.Add(new ForecastCommitmentItem(date, "Scheduled Monthly Income", "Income", MoneyDto.Of((long)trailingIncome, ccy, Provenance.Confirmed), "Income"));
+                }
+            }
+
+            // Outflow: Subscriptions due
+            foreach (var sub in subscriptions)
+            {
+                if (sub.NextBillingDate.Day == date.Day)
+                {
+                    var amt = sub.AmountMinor;
+                    dayOutflows += amt;
+                    if (offset <= 30)
+                    {
+                        commitments.Add(new ForecastCommitmentItem(date, sub.Name, "Subscription", MoneyDto.Of(amt, ccy, Provenance.Confirmed), "Committed"));
+                    }
+                }
+            }
+
+            // Outflow: Debt payments due
+            foreach (var liab in liabilities)
+            {
+                var dueDay = liab.DueDate.HasValue ? liab.DueDate.Value.Day : 15;
+                if (dueDay == date.Day && liab.MonthlyPaymentMinor > 0)
+                {
+                    var amt = liab.MonthlyPaymentMinor;
+                    dayOutflows += amt;
+                    if (offset <= 30)
+                    {
+                        commitments.Add(new ForecastCommitmentItem(date, $"{liab.Name} payment", "Debt", MoneyDto.Of(amt, ccy, Provenance.Confirmed), "Debt"));
+                    }
+                }
+            }
+
+            runningInflows += dayInflows;
+            runningOutflows += dayOutflows;
+            runningBalance += (dayInflows - dayOutflows);
+
+            if (runningBalance < lowestDip)
+            {
+                lowestDip = runningBalance;
+                lowestDipDate = date;
+            }
+
+            var pt = new DayForecastPoint(
+                offset,
+                date,
+                MoneyDto.Of((long)runningBalance, ccy, Provenance.Confirmed),
+                MoneyDto.Of((long)runningInflows, ccy, Provenance.Confirmed),
+                MoneyDto.Of((long)runningOutflows, ccy, Provenance.Confirmed));
+
+            timeline.Add(pt);
+
+            if (offset == 30) point30 = pt;
+            if (offset == 60) point60 = pt;
+            if (offset == 90) point90 = pt;
+        }
+
+        // 4. Runway calculation
+        int? runwayDays = null;
+        decimal? runwayMonths = null;
+        string runwayStatus;
+
+        var netMonthlyBurn = monthlyBurnMinor - trailingIncome;
+        if (netMonthlyBurn <= 0)
+        {
+            runwayStatus = "Infinite";
+        }
+        else
+        {
+            var dailyNetBurn = netMonthlyBurn / 30m;
+            runwayDays = dailyNetBurn > 0 ? (int)(liquidCashMinor / dailyNetBurn) : 999;
+            runwayMonths = Math.Round((decimal)runwayDays.Value / 30.41m, 1);
+            runwayStatus = runwayDays >= 180 ? "Healthy" : runwayDays >= 60 ? "Caution" : "Critical";
+        }
+
+        var insights = new List<string>();
+        if (runwayStatus == "Infinite")
+        {
+            insights.Add("Cash flow is net positive: your monthly inflows comfortably exceed trailing monthly expenditure.");
+        }
+        else
+        {
+            insights.Add($"Liquid runway is approximately {runwayMonths:F1} months ({runwayDays} days) at your trailing burn pace.");
+        }
+
+        if (lowestDip < 0)
+        {
+            insights.Add($"⚠️ Warning: Without additional inflows, cash is projected to dip negative on {lowestDipDate:MMM d, yyyy}.");
+        }
+        else
+        {
+            insights.Add($"Lowest projected cash point over the next 90 days is {Money.FromMajor(lowestDip / 100m, ccy).Format()} on {lowestDipDate:MMM d, yyyy}.");
+        }
+
+        return new CashFlowForecastDto(
+            MoneyDto.Of(liquidCashMinor, ccy, Provenance.Confirmed),
+            MoneyDto.Of(monthlyBurnMinor, ccy, Provenance.Confirmed),
+            runwayDays,
+            runwayMonths,
+            runwayStatus,
+            point30,
+            point60,
+            point90,
+            MoneyDto.Of((long)lowestDip, ccy, Provenance.Confirmed),
+            lowestDipDate,
+            timeline,
+            commitments,
+            insights);
+    }
+
+    public async Task<DebtPayoffSimulationDto> SimulateDebtPayoffAsync(decimal extraMonthly, CancellationToken ct)
+    {
+        var owner = await RequireOwner(ct);
+        var ccy = owner.BaseCurrency;
+        var liabilities = await db.Liabilities.Where(l => l.OwnerId == owner.Id && l.BalanceMinor > 0).ToListAsync(ct);
+
+        var totalDebtMinor = liabilities.Sum(l => l.BalanceMinor);
+        var baselineMonthlyMinor = liabilities.Sum(l => l.MonthlyPaymentMinor > 0 ? l.MonthlyPaymentMinor : (long)(l.BalanceMinor * 0.03m));
+        var extraMinor = (long)(Math.Max(0, extraMonthly) * 100m);
+        var totalMonthlyPoolMinor = baselineMonthlyMinor + extraMinor;
+
+        if (liabilities.Count == 0 || totalDebtMinor <= 0)
+        {
+            var empty = new DebtStrategyResultDto("None", 0, MoneyMapping.Today(), MoneyDto.Of(0, ccy, Provenance.Confirmed), MoneyDto.Of(0, ccy, Provenance.Confirmed), []);
+            return new DebtPayoffSimulationDto(
+                MoneyDto.Of(0, ccy, Provenance.Confirmed),
+                MoneyDto.Of(0, ccy, Provenance.Confirmed),
+                MoneyDto.Of(extraMinor, ccy, Provenance.Confirmed),
+                MoneyDto.Of(extraMinor, ccy, Provenance.Confirmed),
+                empty,
+                empty,
+                MoneyDto.Of(0, ccy, Provenance.Confirmed),
+                0,
+                "You have no outstanding debts! Your net worth is 100% debt-free.");
+        }
+
+        DebtStrategyResultDto RunStrategy(string name, List<Liability> orderedDebts)
+        {
+            var debts = orderedDebts.Select(d => new
+            {
+                d.Id,
+                d.Name,
+                d.Lender,
+                d.InterestRatePercent,
+                Balance = (decimal)d.BalanceMinor,
+                MinPay = (decimal)(d.MonthlyPaymentMinor > 0 ? d.MonthlyPaymentMinor : (long)(d.BalanceMinor * 0.03m)),
+                TotalInterest = 0m,
+                EliminatedMonth = 0
+            }).ToList();
+
+            var currentPool = (decimal)totalMonthlyPoolMinor;
+            var month = 0;
+            var maxMonths = 360;
+            var today = MoneyMapping.Today();
+
+            while (debts.Any(d => d.Balance > 0) && month < maxMonths)
+            {
+                month++;
+                for (var i = 0; i < debts.Count; i++)
+                {
+                    var d = debts[i];
+                    if (d.Balance <= 0) continue;
+                    var monthlyRate = (decimal)d.InterestRatePercent / 100m / 12m;
+                    var interest = Math.Round(d.Balance * monthlyRate, 2);
+                    debts[i] = d with { Balance = d.Balance + interest, TotalInterest = d.TotalInterest + interest };
+                }
+
+                var unallocatedThisMonth = currentPool;
+                for (var i = 0; i < debts.Count; i++)
+                {
+                    var d = debts[i];
+                    if (d.Balance <= 0) continue;
+                    var pay = Math.Min(d.Balance, d.MinPay);
+                    debts[i] = d with { Balance = d.Balance - pay };
+                    unallocatedThisMonth -= pay;
+                }
+
+                for (var i = 0; i < debts.Count; i++)
+                {
+                    var d = debts[i];
+                    if (d.Balance <= 0) continue;
+                    var extra = Math.Min(d.Balance, unallocatedThisMonth);
+                    debts[i] = d with { Balance = d.Balance - extra };
+                    unallocatedThisMonth -= extra;
+                    if (debts[i].Balance <= 0 && debts[i].EliminatedMonth == 0)
+                    {
+                        debts[i] = debts[i] with { EliminatedMonth = month };
+                    }
+                    if (unallocatedThisMonth <= 0) break;
+                }
+            }
+
+            var steps = debts.Select(d => new DebtPayoffStepDto(
+                d.Id,
+                d.Name,
+                d.Lender,
+                MoneyDto.Of((long)orderedDebts.First(o => o.Id == d.Id).BalanceMinor, ccy, Provenance.Confirmed),
+                (decimal)d.InterestRatePercent,
+                d.EliminatedMonth > 0 ? d.EliminatedMonth : month,
+                today.AddMonths(d.EliminatedMonth > 0 ? d.EliminatedMonth : month),
+                MoneyDto.Of((long)d.TotalInterest, ccy, Provenance.Confirmed)
+            )).ToList();
+
+            var totalInterestPaid = (long)debts.Sum(d => d.TotalInterest);
+            return new DebtStrategyResultDto(
+                name,
+                month,
+                today.AddMonths(month),
+                MoneyDto.Of(totalInterestPaid, ccy, Provenance.Confirmed),
+                MoneyDto.Of((long)currentPool, ccy, Provenance.Confirmed),
+                steps);
+        }
+
+        var snowballOrder = liabilities.OrderBy(l => l.BalanceMinor).ToList();
+        var snowballResult = RunStrategy("Snowball", snowballOrder);
+
+        var avalancheOrder = liabilities.OrderByDescending(l => l.InterestRatePercent).ToList();
+        var avalancheResult = RunStrategy("Avalanche", avalancheOrder);
+
+        var interestSavedMinor = Math.Max(0, (snowballResult.TotalInterestPaid.Minor ?? 0) - (avalancheResult.TotalInterestPaid.Minor ?? 0));
+        var monthsDiff = snowballResult.TotalMonthsToDebtFree - avalancheResult.TotalMonthsToDebtFree;
+
+        var rec = interestSavedMinor > 0
+            ? $"The Avalanche method saves {Money.FromMajor(interestSavedMinor / 100m, ccy).Format()} in interest{(monthsDiff > 0 ? $" and finishes {monthsDiff} month(s) sooner" : "")}. If you prioritize psychological momentum, Snowball eliminates your smallest balance first."
+            : "Both strategies yield similar interest costs. The Snowball method is recommended for faster behavioral wins.";
+
+        return new DebtPayoffSimulationDto(
+            MoneyDto.Of(totalDebtMinor, ccy, Provenance.Confirmed),
+            MoneyDto.Of(baselineMonthlyMinor, ccy, Provenance.Confirmed),
+            MoneyDto.Of(extraMinor, ccy, Provenance.Confirmed),
+            MoneyDto.Of(totalMonthlyPoolMinor, ccy, Provenance.Confirmed),
+            snowballResult,
+            avalancheResult,
+            MoneyDto.Of(interestSavedMinor, ccy, Provenance.Confirmed),
+            monthsDiff,
+            rec);
+    }
+
+    public async Task<TaxReserveStatusDto> GetTaxReserveStatusAsync(CancellationToken ct)
+    {
+        var owner = await RequireOwner(ct);
+        var ccy = owner.BaseCurrency;
+        var today = MoneyMapping.Today();
+        var yearStart = new DateOnly(today.Year, 1, 1);
+
+        var grossRevenueMinor = await db.Transactions
+            .Where(t => t.OwnerId == owner.Id && !t.IsVoided && t.Date >= yearStart && (t.Type == TransactionType.BusinessRevenue || t.IsBusiness))
+            .SumAsync(t => (long?)t.AmountMinor, ct) ?? 0L;
+
+        var targetPercent = 30.0m;
+        var targetRequiredMinor = (long)(grossRevenueMinor * (targetPercent / 100m));
+
+        var taxEnvelopes = await db.Envelopes
+            .Where(e => e.OwnerId == owner.Id && e.IsActive && (e.Slug.Contains("tax") || e.Name.ToLower().Contains("tax")))
+            .ToListAsync(ct);
+
+        var taxEnvIds = taxEnvelopes.Select(e => e.Id).ToList();
+        var taxAssignedMinor = await db.Assignments
+            .Where(a => taxEnvIds.Contains(a.EnvelopeId))
+            .SumAsync(a => (long?)a.AmountMinor, ct) ?? 0L;
+        var taxSpentMinor = await db.Transactions
+            .Where(t => t.OwnerId == owner.Id && !t.IsVoided && t.EnvelopeId.HasValue && taxEnvIds.Contains(t.EnvelopeId.Value))
+            .SumAsync(t => (long?)t.AmountMinor, ct) ?? 0L;
+        var taxVaultMinor = Math.Max(0L, taxAssignedMinor - taxSpentMinor);
+
+        var diffMinor = taxVaultMinor - targetRequiredMinor;
+        var isAdequate = diffMinor >= 0;
+
+        DateOnly nextDeadline;
+        if (today < new DateOnly(today.Year, 4, 15)) nextDeadline = new DateOnly(today.Year, 4, 15);
+        else if (today < new DateOnly(today.Year, 6, 15)) nextDeadline = new DateOnly(today.Year, 6, 15);
+        else if (today < new DateOnly(today.Year, 9, 15)) nextDeadline = new DateOnly(today.Year, 9, 15);
+        else if (today < new DateOnly(today.Year, 12, 31)) nextDeadline = new DateOnly(today.Year + 1, 1, 15);
+        else nextDeadline = new DateOnly(today.Year, 4, 15);
+
+        var daysUntil = nextDeadline.DayNumber - today.DayNumber;
+
+        var guidance = isAdequate
+            ? $"Tax Reserve Vault is fully funded with a {Money.FromMajor(diffMinor / 100m, ccy).Format()} surplus ahead of the {nextDeadline:MMM d} deadline."
+            : $"Tax Reserve is underfunded by {Money.FromMajor(Math.Abs(diffMinor) / 100m, ccy).Format()}. Transfer funds into your Tax Reserve envelope before {nextDeadline:MMM d} ({daysUntil} days remaining).";
+
+        return new TaxReserveStatusDto(
+            MoneyDto.Of(grossRevenueMinor, ccy, Provenance.Confirmed),
+            targetPercent,
+            MoneyDto.Of(targetRequiredMinor, ccy, Provenance.Confirmed),
+            MoneyDto.Of(taxVaultMinor, ccy, Provenance.Confirmed),
+            MoneyDto.Of(diffMinor, ccy, Provenance.Confirmed),
+            isAdequate,
+            nextDeadline,
+            daysUntil,
+            guidance);
+    }
+
     private async Task<List<ActionDto>> GenerateActionsAsync(Owner owner, DateOnly today, CancellationToken ct)
     {
         var existing = await db.Actions.Where(a => a.OwnerId == owner.Id && a.ForDate == today).ToListAsync(ct);

@@ -394,4 +394,38 @@ public class ApiFlowTests : IClassFixture<WebApplicationFactory<Program>>
         Assert.NotNull(bobTxsAfterLeave);
         Assert.DoesNotContain(bobTxsAfterLeave!, t => t.Description == "Weekly Groceries by Bob");
     }
+
+    [Fact]
+    public async Task CashFlowForecast_and_DebtPayoff_and_TaxReserve_endpoints_operate_seamlessly()
+    {
+        var client = await SignedInClient();
+
+        // 1. Cash flow forecast (30/60/90 days + runway)
+        var forecastRes = await client.GetAsync("/api/v1/forecast/cash-flow");
+        Assert.Equal(HttpStatusCode.OK, forecastRes.StatusCode);
+        var forecast = await forecastRes.Content.ReadFromJsonAsync<CashFlowForecastDto>();
+        Assert.NotNull(forecast);
+        Assert.NotNull(forecast.Forecast30Days);
+        Assert.NotNull(forecast.Forecast60Days);
+        Assert.NotNull(forecast.Forecast90Days);
+        Assert.Equal(90, forecast.DailyTimeline.Count);
+        Assert.NotEmpty(forecast.StrategicInsights);
+
+        // 2. Debt Payoff Simulation (Snowball vs Avalanche)
+        var debtRes = await client.GetAsync("/api/v1/debt/payoff-simulation?extraMonthly=100");
+        Assert.Equal(HttpStatusCode.OK, debtRes.StatusCode);
+        var debtSim = await debtRes.Content.ReadFromJsonAsync<DebtPayoffSimulationDto>();
+        Assert.NotNull(debtSim);
+        Assert.NotNull(debtSim.Snowball);
+        Assert.NotNull(debtSim.Avalanche);
+        Assert.NotEmpty(debtSim.StrategicRecommendation);
+
+        // 3. Tax Reserve Vault Status
+        var taxRes = await client.GetAsync("/api/v1/business/tax-reserve");
+        Assert.Equal(HttpStatusCode.OK, taxRes.StatusCode);
+        var taxStatus = await taxRes.Content.ReadFromJsonAsync<TaxReserveStatusDto>();
+        Assert.NotNull(taxStatus);
+        Assert.True(taxStatus.DaysUntilDeadline >= 0);
+        Assert.NotEmpty(taxStatus.ActionableGuidance);
+    }
 }
