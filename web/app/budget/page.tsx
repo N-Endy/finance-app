@@ -64,7 +64,7 @@ export default function BudgetPage() {
     setCalendar(calendarItems);
     setRules(planRules);
     setRadar(radarDto);
-    setDrafts(Object.fromEntries(budgetItems.filter((item) => item.category !== "Betting").map((item) => [item.category, major(item.budget.major)])));
+    setDrafts(Object.fromEntries(budgetItems.map((item) => [item.category, major(item.budget.major)])));
     setFamilyDrafts(Object.fromEntries(familyRows.filter((row) => row.kind === "Recurring").map((row) => [row.id, major(row.amount.major)])));
     if (!fromEnvelopeId && envs.length > 0) setFromEnvelopeId(envs[0].id);
     if (!toEnvelopeId && envs.length > 1) setToEnvelopeId(envs[1].id);
@@ -507,17 +507,15 @@ export default function BudgetPage() {
             <span className={`badge ${item.status.toLowerCase()}`}>{item.status}</span>
             <p className="sentence">{item.sentence}</p>
             <p className="lede">Actual {item.actual.formatted} · remaining {item.remaining.formatted} · {item.percentUsed}</p>
-            {item.category !== "Betting" && (
-              <form className="row" onSubmit={(event) => saveBudget(event, item.category)}>
-                <input
-                  value={drafts[item.category] ?? ""}
-                  onChange={(e) => setDrafts((current) => ({ ...current, [item.category]: e.target.value }))}
-                  inputMode="decimal"
-                  aria-label={`${item.category} budget`}
-                />
-                <button className="btn" type="submit" disabled={busy === item.category}>Save</button>
-              </form>
-            )}
+            <form className="row" onSubmit={(event) => saveBudget(event, item.category)}>
+              <input
+                value={drafts[item.category] ?? ""}
+                onChange={(e) => setDrafts((current) => ({ ...current, [item.category]: e.target.value }))}
+                inputMode="decimal"
+                aria-label={`${item.category} budget`}
+              />
+              <button className="btn" type="submit" disabled={busy === item.category}>Save</button>
+            </form>
           </Card>
         ))}
       </div>

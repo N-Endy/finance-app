@@ -161,8 +161,6 @@ public static class QuickEntryParser
             if (lower.Contains(needle)) return slug;
         }
 
-        if (lower.Contains("salary")) return "stanbic";
-        if (lower.Contains("secondary")) return "kuda";
         return null;
     }
 
@@ -176,10 +174,6 @@ public static class QuickEntryParser
             }
         }
 
-        if (lower.Contains("rotating")) return "rotating-savings";
-        if (lower.Contains("emergency")) return "cowrywise-emergency";
-        if (lower.Contains("mmf")) return "cowrywise-mmf";
-        if (lower.Contains("opay")) return source == "opay" ? null : "opay";
         return null;
     }
 

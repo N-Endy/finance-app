@@ -143,7 +143,7 @@ public sealed class FinanceOsService(
         var netWorth = await BuildNetWorthAsync(owner, ct);
         var spendable = await BuildSpendableAsync(owner, ct);
         var month = await MonthTotalsAsync(owner.Id, start, end, ct);
-        var emergency = await HoldingMoneyAsync(owner.Id, "emergency", ct);
+        var (emergency, emergencySentence) = await EmergencyFundStatusAsync(owner, ct);
         var housing = await HousingMoneyAsync(owner, ct);
         var actions = await GenerateActionsAsync(owner, today, ct);
         var unknowns = await UnknownFactsAsync(owner, ct);
@@ -152,16 +152,14 @@ public sealed class FinanceOsService(
         var saved = (month.Savings.Minor ?? 0) + (month.Investments.Minor ?? 0);
         string? savingsRate = income <= 0
             ? "Savings rate is UNKNOWN this month because no income has been recorded yet."
-            : $"This month you directed {Money.FromMajor(saved / 100m, Currency.Ngn)} of {Money.FromMajor(income / 100m, Currency.Ngn)} toward savings and investments.";
+            : $"This month you directed {Money.FromMajor(saved / 100m, owner.BaseCurrency)} of {Money.FromMajor(income / 100m, owner.BaseCurrency)} toward savings and investments.";
 
         return new DashboardDto(
             netWorth.Result,
             await LiquidCashAsync(owner, ct),
             await InvestmentsMoneyAsync(owner, ct),
             emergency,
-            emergency.Minor is null
-                ? "Emergency fund is last-known only. Verify the current Cowrywise Emergency balance."
-                : $"Emergency fund is {emergency.Formatted}. The provisional target is ₦2,400,000 until post-move essential expenses exist.",
+            emergencySentence,
             housing.Amount,
             housing.Sentence,
             month.Income,
@@ -795,8 +793,9 @@ public sealed class FinanceOsService(
             throw new DomainException("Mark that you have moved in Settings before converting the housing goal to next rent.");
         }
 
-        var housing = await db.Goals.SingleAsync(g => g.OwnerId == owner.Id && g.Slug == "housing", ct);
-        var next = await db.Goals.SingleAsync(g => g.OwnerId == owner.Id && g.Slug == "next-rent", ct);
+        var housing = await db.Goals.FirstOrDefaultAsync(g => g.OwnerId == owner.Id && g.Slug == "housing", ct);
+        var next = await db.Goals.FirstOrDefaultAsync(g => g.OwnerId == owner.Id && g.Slug == "next-rent", ct);
+        if (housing is null || next is null) return;
         housing.IsActive = false;
         next.ConvertedFromHousing = true;
         next.IsActive = true;
@@ -981,25 +980,26 @@ public sealed class FinanceOsService(
             var budget = line.AmountMinor ?? 0;
             var (status, sentence, percent) = BudgetStatusCalculator.Evaluate(budget, actual, owner.WatchPercent, owner.WarningPercent, owner.OverBudgetPercent);
             items.Add(new BudgetItemDto(line.Name,
-                MoneyDto.Of(budget, Currency.Ngn, Provenance.Plan),
-                MoneyDto.Of(actual, Currency.Ngn, Provenance.Confirmed),
-                MoneyDto.Of(budget - actual, Currency.Ngn, Provenance.Confirmed),
+                MoneyDto.Of(budget, owner.BaseCurrency, Provenance.Plan),
+                MoneyDto.Of(actual, owner.BaseCurrency, Provenance.Confirmed),
+                MoneyDto.Of(budget - actual, owner.BaseCurrency, Provenance.Confirmed),
                 percent is null ? "UNKNOWN" : $"{percent:0.#}%",
                 status.ToString(),
                 sentence));
         }
 
         var bettingActual = txs.Where(t => t.Category is { IsBetting: true }).Sum(t => t.AmountMinor);
-        var betting = BudgetStatusCalculator.Evaluate(0, bettingActual, owner.WatchPercent, owner.WarningPercent, owner.OverBudgetPercent);
-        items.Add(new BudgetItemDto("Betting",
-            MoneyDto.Of(0, Currency.Ngn, Provenance.Plan),
-            MoneyDto.Of(bettingActual, Currency.Ngn, Provenance.Confirmed),
-            MoneyDto.Of(-bettingActual, Currency.Ngn, Provenance.Confirmed),
-            bettingActual == 0 ? "0%" : "over",
-            bettingActual == 0 ? "Normal" : "OverBudget",
-            bettingActual == 0
-                ? "Betting allocation is ₦0 and no betting expenses were recorded this month."
-                : $"Betting activity of {Money.FromMajor(bettingActual / 100m, Currency.Ngn)} was recorded. The plan allocates ₦0."));
+        if (bettingActual > 0)
+        {
+            var betting = BudgetStatusCalculator.Evaluate(0, bettingActual, owner.WatchPercent, owner.WarningPercent, owner.OverBudgetPercent);
+            items.Add(new BudgetItemDto("Betting",
+                MoneyDto.Of(0, owner.BaseCurrency, Provenance.Plan),
+                MoneyDto.Of(bettingActual, owner.BaseCurrency, Provenance.Confirmed),
+                MoneyDto.Of(-bettingActual, owner.BaseCurrency, Provenance.Confirmed),
+                "over",
+                "OverBudget",
+                $"Betting activity of {Money.FromMajor(bettingActual / 100m, owner.BaseCurrency)} was recorded."));
+        }
 
         return items;
     }
@@ -1182,27 +1182,32 @@ public sealed class FinanceOsService(
     public async Task<PensionDto> PensionAsync(CancellationToken ct)
     {
         var owner = await RequireOwner(ct);
-        var pension = await db.Pensions.SingleAsync(p => p.OwnerId == owner.Id, ct);
-        if (pension.CurrentBalanceMinor is null)
+        var pension = await db.Pensions.FirstOrDefaultAsync(p => p.OwnerId == owner.Id, ct);
+        if (pension?.CurrentBalanceMinor is null)
         {
-            return new PensionDto(MoneyDto.Unknown("RSA balance is unknown until a statement is entered."),
-                null, null, "RSA balance is unknown.");
+            return new PensionDto(MoneyDto.Unknown("Retirement / pension balance is unknown until recorded."),
+                null, null, "Pension balance is unrecorded.");
         }
 
         return new PensionDto(
             MoneyDto.Of(pension.CurrentBalanceMinor.Value, pension.Currency, pension.Provenance),
             pension.EmployeeContributionMinor is null ? null : MoneyDto.Of(pension.EmployeeContributionMinor.Value, pension.Currency, Provenance.Confirmed),
             pension.EmployerContributionMinor is null ? null : MoneyDto.Of(pension.EmployerContributionMinor.Value, pension.Currency, Provenance.Confirmed),
-            pension.Provenance == Provenance.Confirmed ? "RSA figures are as you entered them." : "Last-known RSA balance.");
+            pension.Provenance == Provenance.Confirmed ? "Retirement figures are as entered." : "Last-known retirement balance.");
     }
 
     public async Task UpdatePensionAsync(decimal? balance, decimal? employee, decimal? employer, int? retirementAge, CancellationToken ct)
     {
         var owner = await RequireOwner(ct);
-        var pension = await db.Pensions.SingleAsync(p => p.OwnerId == owner.Id, ct);
-        pension.CurrentBalanceMinor = balance is null ? null : Money.NgnFromMajor(balance.Value).MinorUnits;
-        pension.EmployeeContributionMinor = employee is null ? null : Money.NgnFromMajor(employee.Value).MinorUnits;
-        pension.EmployerContributionMinor = employer is null ? null : Money.NgnFromMajor(employer.Value).MinorUnits;
+        var pension = await db.Pensions.FirstOrDefaultAsync(p => p.OwnerId == owner.Id, ct);
+        if (pension is null)
+        {
+            pension = new PensionAccount { OwnerId = owner.Id, Currency = owner.BaseCurrency };
+            db.Pensions.Add(pension);
+        }
+        pension.CurrentBalanceMinor = balance is null ? null : (long)(balance.Value * 100);
+        pension.EmployeeContributionMinor = employee is null ? null : (long)(employee.Value * 100);
+        pension.EmployerContributionMinor = employer is null ? null : (long)(employer.Value * 100);
         pension.RetirementAge = retirementAge;
         pension.Provenance = balance is null ? Provenance.Unknown : Provenance.Confirmed;
         await db.SaveChangesAsync(ct);
@@ -1211,8 +1216,14 @@ public sealed class FinanceOsService(
     public async Task<RetirementDto> RetirementAsync(CancellationToken ct)
     {
         var owner = await RequireOwner(ct);
-        var assumptions = await db.RetirementAssumptions.SingleAsync(r => r.OwnerId == owner.Id, ct);
-        var invested = await db.Holdings.Where(h => h.OwnerId == owner.Id && h.IncludeInNetWorth && !h.IsExpectedReceivable && h.Provenance == Provenance.Confirmed && h.Currency == Currency.Ngn)
+        var assumptions = await db.RetirementAssumptions.FirstOrDefaultAsync(r => r.OwnerId == owner.Id, ct);
+        if (assumptions is null)
+        {
+            assumptions = new RetirementAssumption { OwnerId = owner.Id };
+            db.RetirementAssumptions.Add(assumptions);
+            await db.SaveChangesAsync(ct);
+        }
+        var invested = await db.Holdings.Where(h => h.OwnerId == owner.Id && h.IncludeInNetWorth && !h.IsExpectedReceivable && h.Provenance == Provenance.Confirmed && h.Currency == owner.BaseCurrency)
             .SumAsync(h => (long?)h.AmountMinor, ct) ?? 0;
         var scenarios = RetirementCalculator.Project(
             assumptions.CurrentAge ?? owner.Age,
@@ -1226,13 +1237,18 @@ public sealed class FinanceOsService(
             assumptions.Inflation);
         return new RetirementDto(scenarios[0].Sentence,
             scenarios.Select(s => new RetirementScenarioDto(s.Name, s.Sentence,
-                s.FutureValueMinor is null ? null : MoneyDto.Estimate(s.FutureValueMinor.Value, Currency.Ngn, s.Sentence))).ToList());
+                s.FutureValueMinor is null ? null : MoneyDto.Estimate(s.FutureValueMinor.Value, owner.BaseCurrency, s.Sentence))).ToList());
     }
 
     public async Task UpdateRetirementAsync(RetirementAssumption patch, CancellationToken ct)
     {
         var owner = await RequireOwner(ct);
-        var row = await db.RetirementAssumptions.SingleAsync(r => r.OwnerId == owner.Id, ct);
+        var row = await db.RetirementAssumptions.FirstOrDefaultAsync(r => r.OwnerId == owner.Id, ct);
+        if (row is null)
+        {
+            row = new RetirementAssumption { OwnerId = owner.Id };
+            db.RetirementAssumptions.Add(row);
+        }
         row.CurrentAge = patch.CurrentAge;
         row.RetirementAge = patch.RetirementAge;
         row.MonthlyContributionMinor = patch.MonthlyContributionMinor;
@@ -1259,15 +1275,22 @@ public sealed class FinanceOsService(
         return list;
     }
 
-    public async Task<BusinessDto> BusinessBySlugAsync(string slug, CancellationToken ct)
+    public async Task<BusinessDto?> BusinessBySlugAsync(string slug, CancellationToken ct)
     {
         var owner = await RequireOwner(ct);
-        var business = await db.Businesses.FirstOrDefaultAsync(b => b.OwnerId == owner.Id && b.Slug == slug, ct)
-                       ?? throw new DomainException($"Business '{slug}' was not found.");
+        var business = await db.Businesses.FirstOrDefaultAsync(b => b.OwnerId == owner.Id && b.Slug == slug, ct);
+        if (business is null) return null;
         return await CalculateBusinessDtoAsync(owner, business, ct);
     }
 
-    public Task<BusinessDto> BusinessAsync(CancellationToken ct) => BusinessBySlugAsync("matchpredictor", ct);
+    public async Task<BusinessDto?> BusinessAsync(CancellationToken ct)
+    {
+        var owner = await RequireOwner(ct);
+        var business = await db.Businesses.FirstOrDefaultAsync(b => b.OwnerId == owner.Id && b.Slug == "matchpredictor", ct)
+                       ?? await db.Businesses.FirstOrDefaultAsync(b => b.OwnerId == owner.Id, ct);
+        if (business is null) return null;
+        return await CalculateBusinessDtoAsync(owner, business, ct);
+    }
 
     public async Task<BusinessDto> CreateBusinessAsync(BusinessWriteRequest request, CancellationToken ct)
     {
@@ -1530,8 +1553,23 @@ public sealed class FinanceOsService(
         await db.SaveChangesAsync(ct);
     }
 
-    public Task UpdateBusinessSplitAsync(int reinvest, int personal, CancellationToken ct) =>
-        UpdateBusinessSplitAsync("matchpredictor", reinvest, personal, ct);
+    public async Task UpdateBusinessSplitAsync(int reinvest, int personal, CancellationToken ct)
+    {
+        var owner = await RequireOwner(ct);
+        var biz = await db.Businesses.FirstOrDefaultAsync(b => b.OwnerId == owner.Id && b.Slug == "matchpredictor", ct)
+                  ?? await db.Businesses.FirstOrDefaultAsync(b => b.OwnerId == owner.Id, ct);
+        if (biz != null)
+        {
+            await UpdateBusinessSplitAsync(biz.Slug, reinvest, personal, ct);
+        }
+        else
+        {
+            if (reinvest + personal != 100) throw new DomainException("Reinvestment and personal percentages must add to 100.");
+            owner.BusinessReinvestPercent = reinvest;
+            owner.BusinessPersonalPercent = personal;
+            await db.SaveChangesAsync(ct);
+        }
+    }
 
     public async Task<IReadOnlyList<LiabilityDto>> LiabilitiesAsync(CancellationToken ct)
     {
@@ -1751,31 +1789,31 @@ public sealed class FinanceOsService(
         else if (pacingRatio <= 0.85m)
         {
             status = "UnderBudget";
-            sentence = $"Spending is well paced at {Money.FromMajor(actualDailySpendMinor / 100m, Currency.Ngn)}/day vs {Money.FromMajor(allowedBurnPerDayMinor / 100m, Currency.Ngn)}/day allowed.";
+            sentence = $"Spending is well paced at {Money.FromMajor(actualDailySpendMinor / 100m, owner.BaseCurrency)}/day vs {Money.FromMajor(allowedBurnPerDayMinor / 100m, owner.BaseCurrency)}/day allowed.";
         }
         else if (pacingRatio <= 1.05m)
         {
             status = "OnTrack";
-            sentence = $"Pacing on target: burning {Money.FromMajor(actualDailySpendMinor / 100m, Currency.Ngn)}/day with {daysRemaining} days remaining.";
+            sentence = $"Pacing on target: burning {Money.FromMajor(actualDailySpendMinor / 100m, owner.BaseCurrency)}/day with {daysRemaining} days remaining.";
         }
         else
         {
             status = "BurningFast";
-            sentence = $"Burning faster than target ({Money.FromMajor(actualDailySpendMinor / 100m, Currency.Ngn)}/day vs {Money.FromMajor(allowedBurnPerDayMinor / 100m, Currency.Ngn)}/day allowed). Slow down to avoid running out.";
+            sentence = $"Burning faster than target ({Money.FromMajor(actualDailySpendMinor / 100m, owner.BaseCurrency)}/day vs {Money.FromMajor(allowedBurnPerDayMinor / 100m, owner.BaseCurrency)}/day allowed). Slow down to avoid running out.";
         }
 
         var projectedMonthEndMinor = actualDailySpendMinor * daysInMonth;
 
         return new SpendingVelocityDto(
-            MoneyDto.Of(allowedBurnPerDayMinor, Currency.Ngn, Provenance.Confirmed),
-            MoneyDto.Of(actualDailySpendMinor, Currency.Ngn, Provenance.Confirmed),
+            MoneyDto.Of(allowedBurnPerDayMinor, owner.BaseCurrency, Provenance.Confirmed),
+            MoneyDto.Of(actualDailySpendMinor, owner.BaseCurrency, Provenance.Confirmed),
             pacingRatio,
             status,
             daysRemaining,
             daysElapsed,
-            MoneyDto.Of(projectedMonthEndMinor, Currency.Ngn, Provenance.Confirmed),
-            MoneyDto.Of(monthToDateExpensesMinor, Currency.Ngn, Provenance.Confirmed),
-            MoneyDto.Of(spendableMinor, Currency.Ngn, Provenance.Confirmed),
+            MoneyDto.Of(projectedMonthEndMinor, owner.BaseCurrency, Provenance.Confirmed),
+            MoneyDto.Of(monthToDateExpensesMinor, owner.BaseCurrency, Provenance.Confirmed),
+            MoneyDto.Of(spendableMinor, owner.BaseCurrency, Provenance.Confirmed),
             sentence);
     }
 
@@ -1806,7 +1844,7 @@ public sealed class FinanceOsService(
         var toEnv = await db.Envelopes.SingleOrDefaultAsync(e => e.Id == request.ToEnvelopeId && e.OwnerId == owner.Id, ct)
                     ?? throw new DomainException("Target envelope not found.");
 
-        var transferAmountMinor = Money.NgnFromMajor(request.Amount).MinorUnits;
+        var transferAmountMinor = (long)(request.Amount * 100m);
         if (transferAmountMinor <= 0)
         {
             throw new DomainException("Rebalance amount must be positive.");
@@ -1816,7 +1854,7 @@ public sealed class FinanceOsService(
         var totalFromMinor = fromAssignments.Sum(a => a.AmountMinor);
         if (totalFromMinor < transferAmountMinor)
         {
-            throw new DomainException($"Cannot transfer {Money.FromMajor(request.Amount, Currency.Ngn)} from {fromEnv.Name}; envelope only holds {Money.FromMajor(totalFromMinor / 100m, Currency.Ngn)}.");
+            throw new DomainException($"Cannot transfer {Money.FromMajor(request.Amount, owner.BaseCurrency)} from {fromEnv.Name}; envelope only holds {Money.FromMajor(totalFromMinor / 100m, owner.BaseCurrency)}.");
         }
 
         var targetAccount = fromAssignments.First().AccountId;
@@ -1825,7 +1863,7 @@ public sealed class FinanceOsService(
             AccountId = targetAccount,
             EnvelopeId = fromEnv.Id,
             AmountMinor = -transferAmountMinor,
-            Currency = Currency.Ngn,
+            Currency = owner.BaseCurrency,
             AsOf = MoneyMapping.Today(),
             Notes = $"Rebalance to {toEnv.Name}: {request.Notes}"
         });
@@ -1835,13 +1873,13 @@ public sealed class FinanceOsService(
             AccountId = targetAccount,
             EnvelopeId = toEnv.Id,
             AmountMinor = transferAmountMinor,
-            Currency = Currency.Ngn,
+            Currency = owner.BaseCurrency,
             AsOf = MoneyMapping.Today(),
             Notes = $"Rebalance from {fromEnv.Name}: {request.Notes}"
         });
 
         await db.SaveChangesAsync(ct);
-        await AuditAsync(owner.Id, "rebalance", "Envelope", toEnv.Id, $"Rebalanced {Money.FromMajor(request.Amount, Currency.Ngn)} from {fromEnv.Name} to {toEnv.Name}.", ct);
+        await AuditAsync(owner.Id, "rebalance", "Envelope", toEnv.Id, $"Rebalanced {Money.FromMajor(request.Amount, owner.BaseCurrency)} from {fromEnv.Name} to {toEnv.Name}.", ct);
     }
 
     public async Task<IReadOnlyList<ActionDto>> ActionsAsync(CancellationToken ct)
@@ -1903,25 +1941,29 @@ public sealed class FinanceOsService(
 
         var today = MoneyMapping.Today();
         var (start, _) = MoneyMapping.MonthBounds(today);
-        var emergencyMoved = await db.Transactions.AnyAsync(t => t.OwnerId == owner.Id && !t.IsVoided && t.Date >= start && t.Description.Contains("Emergency"), ct);
-        if (today.Day >= 28 && !emergencyMoved)
+        var emergencyGoal = await db.Goals.FirstOrDefaultAsync(g => g.OwnerId == owner.Id && (g.Kind == GoalKind.Emergency || g.Slug.Contains("emergency")), ct);
+        if (emergencyGoal != null && emergencyGoal.MonthlyContributionMinor is long targetContribution && targetContribution > 0)
         {
-            alerts.Add(new AlertDto("MissedSavings", "The planned ₦50,000 emergency contribution has not been recorded this month."));
+            var emergencyMoved = await db.Transactions.AnyAsync(t => t.OwnerId == owner.Id && !t.IsVoided && t.Date >= start && (t.Description.Contains("Emergency") || (t.Envelope != null && t.Envelope.Class == EnvelopeClass.Emergency)), ct);
+            if (today.Day >= 28 && !emergencyMoved)
+            {
+                alerts.Add(new AlertDto("MissedSavings", $"The planned {MoneyDto.Of(targetContribution, owner.BaseCurrency, Provenance.Plan).Formatted} emergency contribution has not been recorded this month."));
+            }
         }
 
-        var access = await db.Accounts.SingleAsync(a => a.OwnerId == owner.Id && a.Slug == "access", ct);
-        var accessSnap = await LatestSnapshotAsync(access.Id, ct);
-        var due = await db.Subscriptions.Where(s => s.OwnerId == owner.Id && s.IsActive && s.PaymentAccountId == access.Id && s.NextBillingDate <= today.AddDays(7)).ToListAsync(ct);
-        var dueTotal = due.Where(d => d.AmountMinor > 0 && d.Currency == Currency.Ngn).Sum(d => d.AmountMinor);
-        if (due.Count > 0)
+        var due = await db.Subscriptions.Where(s => s.OwnerId == owner.Id && s.IsActive && s.NextBillingDate <= today.AddDays(7)).ToListAsync(ct);
+        foreach (var sub in due)
         {
-            if (accessSnap is null)
+            var subAcc = await db.Accounts.FirstOrDefaultAsync(a => a.Id == sub.PaymentAccountId, ct);
+            if (subAcc is null) continue;
+            var subAccSnap = await LatestSnapshotAsync(subAcc.Id, ct);
+            if (subAccSnap is null)
             {
-                alerts.Add(new AlertDto("SubscriptionFunding", $"{Money.FromMajor(dueTotal / 100m, Currency.Ngn)} is scheduled to leave Access Bank in the next 7 days. The Access balance is UNKNOWN."));
+                alerts.Add(new AlertDto("SubscriptionFunding", $"{MoneyDto.Of(sub.AmountMinor, sub.Currency, Provenance.Plan).Formatted} for {sub.Name} is scheduled in the next 7 days from {subAcc.Name}. Balance is unconfirmed."));
             }
-            else if (accessSnap.AmountMinor < dueTotal)
+            else if (subAccSnap.AmountMinor < sub.AmountMinor)
             {
-                alerts.Add(new AlertDto("SubscriptionFunding", $"Access needs {Money.FromMajor((dueTotal - accessSnap.AmountMinor) / 100m, Currency.Ngn)} before the next subscription cycle."));
+                alerts.Add(new AlertDto("SubscriptionFunding", $"{subAcc.Name} needs {MoneyDto.Of(sub.AmountMinor - subAccSnap.AmountMinor, sub.Currency, Provenance.Plan).Formatted} before {sub.Name} renews."));
             }
         }
 
@@ -2014,12 +2056,12 @@ public sealed class FinanceOsService(
         var family = await db.FamilyRecipients.Where(r => r.OwnerId == owner.Id && r.IsRecurring).ToListAsync(ct);
         return new SettingsDto(owner.DisplayName,
             owner.OpayMonthlyAllowanceMinor is null
-                ? MoneyDto.Unknown("Choose a single OPay monthly allowance inside the ₦60,000–₦80,000 band before overspend alerts fire.")
-                : MoneyDto.Of(owner.OpayMonthlyAllowanceMinor.Value, Currency.Ngn, Provenance.Confirmed),
+                ? MoneyDto.Unknown("Monthly discretionary allowance not set.")
+                : MoneyDto.Of(owner.OpayMonthlyAllowanceMinor.Value, owner.BaseCurrency, Provenance.Confirmed),
             owner.WatchPercent, owner.WarningPercent, owner.OverBudgetPercent,
             owner.BusinessReinvestPercent, owner.BusinessPersonalPercent,
             family.Select(f => new FamilyLineDto(f.Id, f.Name,
-                f.RecurringAmountMinor is null ? null : MoneyDto.Of(f.RecurringAmountMinor.Value, Currency.Ngn, Provenance.Plan),
+                f.RecurringAmountMinor is null ? null : MoneyDto.Of(f.RecurringAmountMinor.Value, owner.BaseCurrency, Provenance.Plan),
                 f.Purpose, f.IsRecurring)).ToList(),
             owner.HasMoved);
     }
@@ -2029,12 +2071,12 @@ public sealed class FinanceOsService(
         var owner = await RequireOwner(ct);
         if (request.OpayAllowance is not null)
         {
-            if (request.OpayAllowance < 60000 || request.OpayAllowance > 80000)
+            if (request.OpayAllowance < 0)
             {
-                throw new DomainException("The starting OPay allowance band is ₦60,000–₦80,000. Pick a single number inside that band.");
+                throw new DomainException("Monthly spending allowance cannot be negative.");
             }
 
-            owner.OpayMonthlyAllowanceMinor = Money.NgnFromMajor(request.OpayAllowance.Value).MinorUnits;
+            owner.OpayMonthlyAllowanceMinor = (long)(request.OpayAllowance.Value * 100m);
         }
 
         owner.WatchPercent = request.WatchPercent ?? owner.WatchPercent;
@@ -2316,8 +2358,6 @@ public sealed class FinanceOsService(
         var open = violations.Where(v => v.IsOpen).ToList();
         var accounts = await db.Accounts.Where(a => a.OwnerId == owner.Id && a.IsActive).ToListAsync(ct);
         var businesses = await db.Businesses.Where(b => b.OwnerId == owner.Id && b.IsActive).ToListAsync(ct);
-        var stanbic = accounts.FirstOrDefault(a => a.Slug == "stanbic") ?? accounts.FirstOrDefault(a => a.Role == AccountRole.Clearing) ?? accounts.FirstOrDefault();
-        var stanbicMoney = stanbic is null ? MoneyDto.Unknown("No Stanbic account recorded.") : await GetEffectiveAccountBalanceAsync(stanbic, ct);
         var facts = new List<LedgerFact>
         {
             Fact("Actually spendable", spendable.Amount),
@@ -2326,20 +2366,27 @@ public sealed class FinanceOsService(
             Fact("This month savings", month.Savings),
             Fact("This month family support", month.FamilySupport),
             Fact("This month transfers (not expenses)", month.Transfers),
-            Fact("This month betting recorded", month.Betting),
-            Fact("Remaining spend envelopes", MoneyDto.Of(remainingSpend, Currency.Ngn, Provenance.Confirmed)),
-            Fact("OPay monthly allowance", owner.OpayMonthlyAllowanceMinor is long allowance
-                ? MoneyDto.Of(allowance, Currency.Ngn, Provenance.Confirmed)
-                : MoneyDto.Unknown("OPay monthly allowance")),
+            Fact("Remaining spend envelopes", MoneyDto.Of(remainingSpend, owner.BaseCurrency, Provenance.Confirmed)),
+            Fact("Discretionary monthly allowance", owner.OpayMonthlyAllowanceMinor is long allowance
+                ? MoneyDto.Of(allowance, owner.BaseCurrency, Provenance.Confirmed)
+                : MoneyDto.Unknown("Monthly allowance not set")),
             Fact("Housing", housing.Amount),
             new("Housing sentence", housing.Sentence, "plan"),
-            Fact("MatchPredictor revenue", biz.Revenue),
-            Fact("MatchPredictor expenses", biz.Expenses),
-            Fact("MatchPredictor net", biz.Net),
-            Fact("Family support this year", MoneyDto.Of(familyYear, Currency.Ngn, Provenance.Confirmed)),
-            new("Open rule violations", open.Count == 0 ? "none" : $"{open.Count}: {open[0].Message}", "confirmed"),
-            Fact("Stanbic current balance", stanbicMoney)
+            Fact("Family support this year", MoneyDto.Of(familyYear, owner.BaseCurrency, Provenance.Confirmed)),
+            new("Open rule violations", open.Count == 0 ? "none" : $"{open.Count}: {open[0].Message}", "confirmed")
         };
+
+        if (month.Betting.Minor > 0)
+        {
+            facts.Add(Fact("This month betting recorded", month.Betting));
+        }
+
+        if (biz is not null)
+        {
+            facts.Add(Fact($"{biz.Name} revenue", biz.Revenue));
+            facts.Add(Fact($"{biz.Name} expenses", biz.Expenses));
+            facts.Add(Fact($"{biz.Name} net", biz.Net));
+        }
 
         foreach (var acc in accounts)
         {
@@ -2406,43 +2453,44 @@ public sealed class FinanceOsService(
         }
         else if (lower.Contains("disappearing") || lower.Contains("what happened"))
         {
+            var bettingText = month.Betting.Minor > 0 ? $", betting {month.Betting.Formatted}" : "";
             answer = AssistantEngine.FromFacts("What happened to my money this month?",
-                $"This month: income {month.Income.Formatted}, personal expenses {month.Expenses.Formatted}, savings {month.Savings.Formatted}, family {month.FamilySupport.Formatted}, career {month.CareerBusiness.Formatted}, betting {month.Betting.Formatted}. Transfers {month.Transfers.Formatted} are not expenses.",
+                $"This month: income {month.Income.Formatted}, personal expenses {month.Expenses.Formatted}, savings {month.Savings.Formatted}, family {month.FamilySupport.Formatted}, career/business {month.CareerBusiness.Formatted}{bettingText}. Transfers {month.Transfers.Formatted} are capital movements.",
                 []);
         }
-        else if (lower.Contains("move") && (lower.Contains("month") || lower.Contains("track")))
+        else if (lower.Contains("move") || lower.Contains("housing") || lower.Contains("rent"))
         {
-            answer = AssistantEngine.FromFacts("Am I on track to move?", housing.Sentence,
-                housing.Explain.Lines.Select(l => new ExplainLine(l.Label, l.Amount.Minor, Currency.Ngn, Provenance.Confirmed, l.Note)).ToList());
+            answer = AssistantEngine.FromFacts("Am I on track with my housing / milestone goal?", housing.Sentence,
+                housing.Explain.Lines.Select(l => new ExplainLine(l.Label, l.Amount.Minor, owner.BaseCurrency, Provenance.Confirmed, l.Note)).ToList());
         }
-        else if (lower.Contains("opay") && (lower.Contains("transfer") || lower.Contains("should")))
+        else if ((lower.Contains("allowance") || lower.Contains("discretionary") || lower.Contains("opay")) && (lower.Contains("transfer") || lower.Contains("should") || lower.Contains("spend")))
         {
-            var opayAllowance = owner.OpayMonthlyAllowanceMinor;
-            answer = opayAllowance is null
-                ? AssistantEngine.FromFacts("How much should I transfer to OPay?",
-                    "UNKNOWN. Choose a single monthly OPay allowance in Settings inside the ₦60,000–₦80,000 band. The app will not invent one.",
-                    [], "OPay monthly allowance")
-                : AssistantEngine.FromFacts("How much should I transfer to OPay?",
-                    $"The chosen OPay allowance is {Money.FromMajor(opayAllowance.Value / 100m, Currency.Ngn)}. Transfer only enough to reach that ceiling after checking this month's OPay spending.",
+            var discretionaryAllowance = owner.OpayMonthlyAllowanceMinor;
+            answer = discretionaryAllowance is null
+                ? AssistantEngine.FromFacts("How much is my spending allowance?",
+                    "A monthly discretionary allowance is not set in Settings. Configure a monthly allowance to track your spending ceiling.",
+                    [])
+                : AssistantEngine.FromFacts("How much is my spending allowance?",
+                    $"Your configured monthly allowance is {Money.FromMajor(discretionaryAllowance.Value / 100m, owner.BaseCurrency)}.",
                     []);
         }
         else if (lower.Contains("family") && (lower.Contains("year") || lower.Contains("given") || lower.Contains("how much")))
         {
             answer = AssistantEngine.FromFacts("How much have I given my family this year?",
-                $"Recorded family support this year is {Money.FromMajor(familyYear / 100m, Currency.Ngn)}. Recurring commitments stay separate from one-off help.",
+                $"Recorded family support this year is {Money.FromMajor(familyYear / 100m, owner.BaseCurrency)}.",
                 []);
         }
-        else if (lower.Contains("software") || lower.Contains("cursor"))
+        else if (lower.Contains("software") || lower.Contains("cursor") || lower.Contains("tools"))
         {
-            answer = AssistantEngine.FromFacts("How much have I spent on software?",
+            answer = AssistantEngine.FromFacts("How much have I spent on software & tools?",
                 $"Career/business spending recorded this month is {month.CareerBusiness.Formatted}.",
                 []);
         }
-        else if (lower.Contains("matchpredictor") || lower.Contains("costing"))
+        else if (biz != null && (lower.Contains("business") || lower.Contains("company") || lower.Contains("venture") || lower.Contains(biz.Name.ToLowerInvariant())))
         {
-            answer = AssistantEngine.FromFacts("How much has MatchPredictor cost me?",
-                $"MatchPredictor revenue {biz.Revenue.Formatted}, expenses {biz.Expenses.Formatted}, net {biz.Net.Formatted}. Personal betting is not included here.",
-                biz.Lines.Select(l => new ExplainLine(l.Category, l.Amount.Minor, Currency.Ngn, Provenance.Confirmed, null)).ToList());
+            answer = AssistantEngine.FromFacts($"How is {biz.Name} performing?",
+                $"{biz.Name} revenue {biz.Revenue.Formatted}, expenses {biz.Expenses.Formatted}, net {biz.Net.Formatted}.",
+                biz.Lines.Select(l => new ExplainLine(l.Category, l.Amount.Minor, owner.BaseCurrency, Provenance.Confirmed, null)).ToList());
         }
         else if (lower.Contains("following") || lower.Contains("on track") || lower.Contains("plan"))
         {
@@ -2455,13 +2503,13 @@ public sealed class FinanceOsService(
         else if (lower.Contains("increase") && lower.Contains("invest"))
         {
             answer = AssistantEngine.FromFacts("Can I increase my investment contribution?",
-                "Only from money that has no other job. Secondary-income remainder is UNKNOWN until Risevest and Bamboo actual naira charges are entered. Do not take the increase from the emergency fund or housing capital.",
-                [], "Actual Risevest naira charge", "Actual Bamboo naira charge");
+                "Only from unassigned money that has no other job. Do not take the increase from your emergency reserve or essential living expenses.",
+                []);
         }
         else
         {
             answer = AssistantEngine.FromFacts(message,
-                "I can answer from your ledger, plan, and confirmed balances. Ask about spendable cash, this month's movement, family, MatchPredictor, housing, OPay, or whether you are following the plan. I will not invent missing balances.",
+                "I can answer from your ledger, budget envelopes, and confirmed balances. Ask about spendable cash, this month's spending, goals, or whether you are following your budget plan.",
                 []);
         }
 
@@ -3373,36 +3421,43 @@ public sealed class FinanceOsService(
         {
             var generated = new List<FinancialAction>();
             var (start, _) = MoneyMapping.MonthBounds(today);
-            if (today.Day >= 27)
+            var accounts = await db.Accounts.Where(a => a.OwnerId == owner.Id && a.IsActive).ToListAsync(ct);
+            int sort = 1;
+
+            // 1. Reconciliation action for any account that needs reconciliation
+            foreach (var acc in accounts)
             {
-                generated.Add(A(owner.Id, today, 1, "Move ₦50,000 to Emergency Fund", "Salary-day checklist. Confirm the real-world transfer yourself."));
-                generated.Add(A(owner.Id, today, 2, "Move ₦50,000 to MMF", "Salary-day checklist."));
-                generated.Add(A(owner.Id, today, 3, "Transfer ₦100,000 to rotating savings", "Treat as housing capital. Do not spend it."));
+                var recon = await ReconcileAsync(acc, ct);
+                if (recon.Status != ReconciliationStatus.Reconciled)
+                {
+                    generated.Add(A(owner.Id, today, sort++, $"Reconcile {acc.Name}", recon.Sentence));
+                    break;
+                }
             }
 
-            if (today.Day >= 12 && today.Day <= 16)
+            // 2. Spending allowance check
+            var dailyAcc = accounts.FirstOrDefault(a => a.AllowsDailySpending || a.Role == AccountRole.DailySpending || a.MonthlyAllowanceMinor > 0);
+            if (dailyAcc != null)
             {
-                generated.Add(A(owner.Id, today, 4, "Apply the ₦400,000 secondary-income waterfall", "Do not move it wholesale to Stanbic. Enter actual Risevest and Bamboo naira charges first."));
+                var allowance = dailyAcc.MonthlyAllowanceMinor ?? owner.OpayMonthlyAllowanceMinor;
+                var spend = await db.Transactions.Where(t => t.OwnerId == owner.Id && !t.IsVoided && t.Date >= start && t.AccountId == dailyAcc.Id && t.Type == TransactionType.Expense).SumAsync(t => t.AmountMinor, ct);
+                if (allowance is long cap && spend > cap)
+                {
+                    generated.Add(A(owner.Id, today, sort++, $"Review {dailyAcc.Name} spending", $"{dailyAcc.Name} spending ({Money.FromMajor(spend / 100m, owner.BaseCurrency)}) has exceeded your {Money.FromMajor(cap / 100m, owner.BaseCurrency)} allowance."));
+                }
             }
 
-            var stanbic = await db.Accounts.SingleAsync(a => a.OwnerId == owner.Id && a.Slug == "stanbic", ct);
-            var recon = await ReconcileAsync(stanbic, ct);
-            if (recon.Status != ReconciliationStatus.Reconciled)
+            // 3. Payday allocation if an active plan exists
+            var plan = await db.AllocationPlans.Include(p => p.Lines).FirstOrDefaultAsync(p => p.OwnerId == owner.Id && p.IsActive, ct);
+            if (plan != null && today.Day >= 25)
             {
-                generated.Add(A(owner.Id, today, 5, "Reconcile Stanbic", recon.Sentence));
+                generated.Add(A(owner.Id, today, sort++, $"Review {plan.Name} Plan", $"Assign incoming cash across your {plan.Lines.Count} envelope targets."));
             }
 
-            var opaySpend = await db.Transactions.Include(t => t.Account)
-                .Where(t => t.OwnerId == owner.Id && !t.IsVoided && t.Date >= start && t.Account!.Slug == "opay" && t.Type == TransactionType.Expense)
-                .SumAsync(t => t.AmountMinor, ct);
-            if (owner.OpayMonthlyAllowanceMinor is long allowance && opaySpend > allowance)
+            // 4. Default actionable prompt if nothing generated
+            if (generated.Count == 0)
             {
-                generated.Add(A(owner.Id, today, 6, "Do not transfer additional money to OPay",
-                    $"OPay spending is already {Money.FromMajor(opaySpend / 100m, Currency.Ngn)} against a {Money.FromMajor(allowance / 100m, Currency.Ngn)} allowance."));
-            }
-            else
-            {
-                generated.Add(A(owner.Id, today, 6, "Review food spending", "Compare food actuals with the ₦45,000 plan before topping up OPay."));
+                generated.Add(A(owner.Id, today, 1, "Review Daily Spend & Envelopes", "Record transactions and verify account balances to keep your financial plan on track."));
             }
 
             db.Actions.AddRange(generated);
@@ -3696,7 +3751,7 @@ public sealed class FinanceOsService(
                 continue;
             }
 
-            if (effective.ProvenanceLabel == "confirmed" && account.Currency == Currency.Ngn)
+            if (effective.ProvenanceLabel == "confirmed" && account.Currency == owner.BaseCurrency)
             {
                 confirmed += effective.Minor.Value;
             }
@@ -3708,16 +3763,16 @@ public sealed class FinanceOsService(
 
         return (confirmed == 0 && missing.Count > 0) || accounts.Count == 0
             ? MoneyDto.Unknown("Confirm your liquid account balances. Last-known figures are not treated as liquid cash today.")
-            : MoneyDto.Of(confirmed, Currency.Ngn, Provenance.Confirmed);
+            : MoneyDto.Of(confirmed, owner.BaseCurrency, Provenance.Confirmed);
     }
 
     private async Task<MoneyDto> InvestmentsMoneyAsync(Owner owner, CancellationToken ct)
     {
-        var rows = await db.Holdings.Where(h => h.OwnerId == owner.Id && h.IncludeInNetWorth && !h.IsExpectedReceivable && h.Currency == Currency.Ngn).ToListAsync(ct);
+        var rows = await db.Holdings.Where(h => h.OwnerId == owner.Id && h.IncludeInNetWorth && !h.IsExpectedReceivable && h.Currency == owner.BaseCurrency).ToListAsync(ct);
         var confirmed = rows.Where(h => h.Provenance == Provenance.Confirmed).Sum(h => h.AmountMinor);
         return confirmed == 0
             ? MoneyDto.Unknown("No confirmed investment balances yet. Last-known holdings are on the Investments screen.")
-            : MoneyDto.Of(confirmed, Currency.Ngn, Provenance.Confirmed);
+            : MoneyDto.Of(confirmed, owner.BaseCurrency, Provenance.Confirmed);
     }
 
     private async Task<MoneyDto> HoldingMoneyAsync(Guid ownerId, string slug, CancellationToken ct)
@@ -3729,31 +3784,80 @@ public sealed class FinanceOsService(
             : MoneyDto.Of(holding.AmountMinor, holding.Currency, holding.Provenance, holding.AsOf);
     }
 
+    private async Task<(MoneyDto Amount, string Sentence)> EmergencyFundStatusAsync(Owner owner, CancellationToken ct)
+    {
+        var emAcc = await db.Accounts.FirstOrDefaultAsync(a => a.OwnerId == owner.Id && (a.Role == AccountRole.SavingsVault || a.Role == AccountRole.StrategicBuffer || a.Slug.Contains("emergency")), ct);
+        var emGoal = await db.Goals.FirstOrDefaultAsync(g => g.OwnerId == owner.Id && (g.Kind == GoalKind.Emergency || g.Slug.Contains("emergency")), ct);
+        var emHolding = await db.Holdings.FirstOrDefaultAsync(h => h.OwnerId == owner.Id && h.Slug.Contains("emergency"), ct);
+
+        long? minor = null;
+        if (emAcc != null)
+        {
+            var eff = await GetEffectiveAccountBalanceAsync(emAcc, ct);
+            if (eff.Minor != null) minor = eff.Minor;
+        }
+        else if (emHolding != null && emHolding.Provenance != Provenance.Unknown)
+        {
+            minor = emHolding.AmountMinor;
+        }
+
+        if (minor != null)
+        {
+            var m = MoneyDto.Of(minor.Value, owner.BaseCurrency, Provenance.Confirmed);
+            var s = emGoal != null
+                ? $"Emergency fund is {m.Formatted} toward a {MoneyDto.Of(emGoal.TargetMinor, owner.BaseCurrency, Provenance.Plan).Formatted} target."
+                : $"Emergency fund is {m.Formatted}.";
+            return (m, s);
+        }
+
+        if (emGoal != null)
+        {
+            var target = MoneyDto.Of(emGoal.TargetMinor, owner.BaseCurrency, Provenance.Plan);
+            return (MoneyDto.Unknown("Emergency balance unrecorded"), $"Emergency target is {target.Formatted}. Record your balance on Accounts.");
+        }
+
+        return (MoneyDto.Unknown("No emergency fund configured"), "Create an emergency account or goal to track your financial safety reserve.");
+    }
+
     private async Task<(MoneyDto Amount, string Sentence, ExplainDto Explain)> HousingMoneyAsync(Owner owner, CancellationToken ct)
     {
-        var piggy = await db.Accounts.SingleOrDefaultAsync(a => a.OwnerId == owner.Id && (a.Slug == "piggyvest-housing" || a.Slug == "housing"), ct);
-        long? confirmedPiggy = null;
-        if (piggy != null)
+        var housingAcc = await db.Accounts.FirstOrDefaultAsync(a => a.OwnerId == owner.Id && (a.Slug.Contains("housing") || a.Slug.Contains("home") || a.Slug.Contains("rent")), ct);
+        var housingGoal = await db.Goals.FirstOrDefaultAsync(g => g.OwnerId == owner.Id && (g.Kind == GoalKind.Housing || g.Slug.Contains("housing") || g.Slug.Contains("home")), ct);
+
+        long? balanceMinor = null;
+        if (housingAcc != null)
         {
-            var eff = await GetEffectiveAccountBalanceAsync(piggy, ct);
-            if (eff.Minor != null && eff.ProvenanceLabel == "confirmed")
-            {
-                confirmedPiggy = eff.Minor;
-            }
+            var eff = await GetEffectiveAccountBalanceAsync(housingAcc, ct);
+            if (eff.Minor != null) balanceMinor = eff.Minor;
         }
-        var home = await db.Holdings.SingleOrDefaultAsync(h => h.OwnerId == owner.Id && h.Slug == "home", ct);
-        long? homeMinor = home is null || home.Provenance == Provenance.Unknown ? null : home.AmountMinor;
-        var rotating = await db.Holdings.SingleOrDefaultAsync(h => h.OwnerId == owner.Id && h.Slug == "rotating", ct);
-        long? rotatingMinor = rotating is null || rotating.Provenance == Provenance.Unknown ? null : rotating.AmountMinor;
-        var projection = HousingProjection.Project(
-            confirmedPiggy, homeMinor, 5, 25_000_000, 500_000, rotatingMinor, 300_000_000, MoneyMapping.Today());
-        var amount = confirmedPiggy is null
-            ? MoneyDto.Unknown("Enter the current PiggyVest housing balance.")
-            : MoneyDto.Of(confirmedPiggy.Value, Currency.Ngn, Provenance.Confirmed);
-        var explain = new ExplainDto("housing-gap", projection.Sentence,
-            "Confirmed housing vault + entered home savings + future planned housing contributions + expected rotating payout. Monthly rotating ₦100k is the same pool as the expected payout and is not added twice.",
-            projection.Lines.Select(MoneyMapping.Line).ToList(), amount);
-        return (amount, projection.Sentence, explain);
+
+        if (housingGoal != null)
+        {
+            var target = MoneyDto.Of(housingGoal.TargetMinor, housingGoal.Currency, Provenance.Plan);
+            var current = balanceMinor != null ? MoneyDto.Of(balanceMinor.Value, owner.BaseCurrency, Provenance.Confirmed) : MoneyDto.Unknown("Balance unrecorded");
+            var sentence = balanceMinor != null
+                ? $"Housing goal is {housingGoal.Name}: {current.Formatted} saved toward {target.Formatted} target."
+                : $"Housing goal is {housingGoal.Name} with target {target.Formatted}. Update your account balance to track progress.";
+            var explain = new ExplainDto("housing-gap", sentence,
+                $"Progress toward {housingGoal.Name} milestone.",
+                [new ExplainLineDto("Target", MoneyDto.Of(housingGoal.TargetMinor, housingGoal.Currency, Provenance.Plan), "Goal target")], current);
+            return (current, sentence, explain);
+        }
+
+        if (housingAcc != null)
+        {
+            var current = balanceMinor != null ? MoneyDto.Of(balanceMinor.Value, owner.BaseCurrency, Provenance.Confirmed) : MoneyDto.Unknown("Balance unrecorded");
+            var sentence = balanceMinor != null
+                ? $"Housing reserve balance in {housingAcc.Name} is {current.Formatted}."
+                : $"Housing reserve in {housingAcc.Name} has no recorded balance yet.";
+            var explain = new ExplainDto("housing-gap", sentence, "Housing reserve account progress.", [], current);
+            return (current, sentence, explain);
+        }
+
+        var unk = MoneyDto.Unknown("No housing reserve or goal configured.");
+        var noSentence = "Define a housing or rent milestone goal under Goals to track progress.";
+        var noExplain = new ExplainDto("housing-gap", noSentence, "No housing goal or dedicated account configured.", [], unk);
+        return (unk, noSentence, noExplain);
     }
 
     private async Task<ExplainDto> SavingsRateExplainAsync(Owner owner, CancellationToken ct)
@@ -3771,14 +3875,14 @@ public sealed class FinanceOsService(
         }
 
         return new ExplainDto("savings-rate",
-            $"You directed {Money.FromMajor(saved / 100m, Currency.Ngn)} of {Money.FromMajor(income / 100m, Currency.Ngn)} toward savings and investments this month.",
+            $"You directed {Money.FromMajor(saved / 100m, owner.BaseCurrency)} of {Money.FromMajor(income / 100m, owner.BaseCurrency)} toward savings and investments this month.",
             "Savings + investments ÷ recorded income. Transfers are not income.",
             [
                 new ExplainLineDto("Income", month.Income, null),
                 new ExplainLineDto("Savings", month.Savings, null),
                 new ExplainLineDto("Investments", month.Investments, null)
             ],
-            MoneyDto.Of(saved, Currency.Ngn, Provenance.Confirmed));
+            MoneyDto.Of(saved, owner.BaseCurrency, Provenance.Confirmed));
     }
 
     private async Task<ExplainDto> BudgetExplainAsync(Owner owner, string categorySlug, CancellationToken ct)
@@ -3838,10 +3942,10 @@ public sealed class FinanceOsService(
             needed.Add(new UnknownFactDto("USD holdings stay in dollars until you enter an FX rate.", "/investments"));
         }
 
-        var pension = await db.Pensions.SingleAsync(p => p.OwnerId == owner.Id, ct);
-        if (pension.CurrentBalanceMinor is null)
+        var pension = await db.Pensions.FirstOrDefaultAsync(p => p.OwnerId == owner.Id, ct);
+        if (pension?.CurrentBalanceMinor is null)
         {
-            needed.Add(new UnknownFactDto("RSA / pension balance is UNKNOWN.", "/investments"));
+            needed.Add(new UnknownFactDto("Retirement / pension balance is UNKNOWN.", "/investments"));
         }
 
         return needed;

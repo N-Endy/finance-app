@@ -227,7 +227,12 @@ public sealed class FinanceController(FinanceOsService finance) : ControllerBase
     public Task<IReadOnlyList<BusinessDto>> Businesses(CancellationToken ct) => finance.BusinessesAsync(ct);
 
     [HttpGet("businesses/{slug}")]
-    public Task<BusinessDto> BusinessBySlug(string slug, CancellationToken ct) => finance.BusinessBySlugAsync(slug, ct);
+    public async Task<ActionResult<BusinessDto>> BusinessBySlug(string slug, CancellationToken ct)
+    {
+        var biz = await finance.BusinessBySlugAsync(slug, ct);
+        if (biz is null) return NotFound(new { error = $"Business '{slug}' was not found." });
+        return Ok(biz);
+    }
 
     [HttpPost("businesses")]
     public Task<BusinessDto> CreateBusiness([FromBody] BusinessWriteRequest request, CancellationToken ct) =>
@@ -241,19 +246,34 @@ public sealed class FinanceController(FinanceOsService finance) : ControllerBase
     }
 
     [HttpPost("businesses/{slug}/transactions")]
-    public Task<BusinessDto> LogBusinessTransaction(string slug, [FromBody] BusinessTransactionRequest request, CancellationToken ct) =>
-        finance.LogBusinessTransactionAsync(slug, request, ct);
+    public async Task<ActionResult<BusinessDto>> LogBusinessTransaction(string slug, [FromBody] BusinessTransactionRequest request, CancellationToken ct)
+    {
+        var biz = await finance.LogBusinessTransactionAsync(slug, request, ct);
+        return Ok(biz);
+    }
 
     [HttpPut("businesses/{slug}/baseline-line")]
-    public Task<BusinessDto> UpdateBusinessBaselineLine(string slug, [FromBody] BusinessBaselineLineRequest request, CancellationToken ct) =>
-        finance.UpdateBusinessBaselineLineAsync(slug, request, ct);
+    public async Task<ActionResult<BusinessDto>> UpdateBusinessBaselineLine(string slug, [FromBody] BusinessBaselineLineRequest request, CancellationToken ct)
+    {
+        var biz = await finance.UpdateBusinessBaselineLineAsync(slug, request, ct);
+        return Ok(biz);
+    }
 
     [HttpPut("businesses/{slug}/baseline")]
-    public Task<BusinessDto> UpdateBusinessBaseline(string slug, [FromBody] List<BusinessBaselineLineRequest> request, CancellationToken ct) =>
-        finance.UpdateBusinessBaselineAsync(slug, request, ct);
+    public async Task<ActionResult<BusinessDto>> UpdateBusinessBaseline(string slug, [FromBody] List<BusinessBaselineLineRequest> request, CancellationToken ct)
+    {
+        var biz = await finance.UpdateBusinessBaselineAsync(slug, request, ct);
+        return Ok(biz);
+    }
 
+    [HttpGet("business")]
     [HttpGet("business/matchpredictor")]
-    public Task<BusinessDto> Business(CancellationToken ct) => finance.BusinessAsync(ct);
+    public async Task<ActionResult<BusinessDto>> Business(CancellationToken ct)
+    {
+        var biz = await finance.BusinessAsync(ct);
+        if (biz is null) return NoContent();
+        return Ok(biz);
+    }
 
     [HttpPut("business/matchpredictor/split")]
     public async Task<IActionResult> Split([FromBody] SplitRequest request, CancellationToken ct)

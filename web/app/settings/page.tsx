@@ -38,7 +38,7 @@ export default function SettingsPage() {
     try {
       await api.updateSettings({ opayAllowance: Number(allowance) });
       setSettings(await api.settings());
-      setMessage("OPay allowance saved. Overspend alerts can now use this single number.");
+      setMessage("Monthly discretionary allowance saved. Spending threshold alerts are now active.");
     } catch (err) {
       setError(failMessage(err));
     } finally {
@@ -96,13 +96,13 @@ export default function SettingsPage() {
       </Card>
 
       {settings && (
-        <Card title="OPay allowance and alert bands">
-          <p className="sentence">Current allowance: {settings.opayAllowance.formatted}. Band used by the plan: ₦60,000–₦80,000.</p>
+        <Card title="Monthly Spending Allowance & Alert Bands">
+          <p className="sentence">Current discretionary spending allowance: {settings.opayAllowance.formatted}. Alerts fire when your spending approaches this ceiling.</p>
           <form className="row" onSubmit={save}>
-            <input value={allowance} onChange={(e) => setAllowance(e.target.value)} />
+            <input value={allowance} onChange={(e) => setAllowance(e.target.value)} type="number" min="0" step="any" placeholder="e.g. 500" />
             <button className="btn" type="submit" disabled={busy === "allowance"}>Save allowance</button>
           </form>
-          <p className="lede">Watch {settings.watchPercent}% · warning {settings.warningPercent}% · over {settings.overBudgetPercent}% · MatchPredictor split {settings.businessReinvestPercent}/{settings.businessPersonalPercent}</p>
+          <p className="lede">Watch {settings.watchPercent}% · warning {settings.warningPercent}% · over {settings.overBudgetPercent}% · Business reinvest/personal split {settings.businessReinvestPercent}/{settings.businessPersonalPercent}%</p>
         </Card>
       )}
 

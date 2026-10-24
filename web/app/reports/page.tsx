@@ -7,12 +7,18 @@ import { api } from "@/lib/api";
 import { failMessage } from "@/lib/feedback";
 import type { Dashboard, Report } from "@/lib/types";
 
-const names = ["spending", "cash-flow", "family", "betting", "business", "reconciliation", "net-worth", "monthly"];
+const names = ["cash-flow", "spending", "family", "business", "reconciliation", "net-worth", "monthly"];
 
 export default function ReportsPage() {
+  const now = new Date();
+  const year = now.getFullYear();
+  const monthStr = String(now.getMonth() + 1).padStart(2, "0");
+  const defaultFrom = `${year}-${monthStr}-01`;
+  const defaultTo = now.toISOString().slice(0, 10);
+
   const [name, setName] = useState("cash-flow");
-  const [from, setFrom] = useState("2026-08-01");
-  const [to, setTo] = useState("2026-09-30");
+  const [from, setFrom] = useState(defaultFrom);
+  const [to, setTo] = useState(defaultTo);
   const [report, setReport] = useState<Report | null>(null);
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -20,8 +26,8 @@ export default function ReportsPage() {
 
   useEffect(() => {
     void api.dashboard().then(setDashboard).catch(() => {});
-    void api.report("cash-flow", "2026-08-01", "2026-09-30").then(setReport).catch(() => {});
-  }, []);
+    void api.report("cash-flow", defaultFrom, defaultTo).then(setReport).catch(() => {});
+  }, [defaultFrom, defaultTo]);
 
   async function load(event: FormEvent) {
     event.preventDefault();
@@ -36,10 +42,10 @@ export default function ReportsPage() {
     }
   }
 
-  const income = dashboard?.thisMonth.income.major ?? 543000;
-  const expenses = dashboard?.thisMonth.expenses.major ?? 280000;
-  const savings = (dashboard?.thisMonth.savings.major ?? 0) + (dashboard?.thisMonth.investments.major ?? 150000);
-  const family = dashboard?.thisMonth.familySupport.major ?? 50000;
+  const income = dashboard?.thisMonth.income.major ?? 0;
+  const expenses = dashboard?.thisMonth.expenses.major ?? 0;
+  const savings = (dashboard?.thisMonth.savings.major ?? 0) + (dashboard?.thisMonth.investments.major ?? 0);
+  const family = dashboard?.thisMonth.familySupport.major ?? 0;
   const netWorth = dashboard?.netWorth.major ?? 0;
 
   return (

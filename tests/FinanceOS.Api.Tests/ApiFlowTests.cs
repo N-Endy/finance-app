@@ -476,4 +476,46 @@ public class ApiFlowTests : IClassFixture<WebApplicationFactory<Program>>
         var loginAfterDelete = await client.PostAsJsonAsync("/api/v1/auth/login", new LoginRequest(email, password));
         Assert.NotEqual(HttpStatusCode.OK, loginAfterDelete.StatusCode);
     }
+
+    [Fact]
+    public async Task New_user_fresh_start_has_no_hardcoded_betting_or_legacy_accounts_and_can_build_own_structure()
+    {
+        var client = _factory.CreateClient(new WebApplicationFactoryClientOptions { HandleCookies = true });
+        var email = $"fresh-user-{Guid.NewGuid():N}@test.com";
+        const string password = "secure-password-1234";
+
+        // 1. Sign up new user with EUR and zero_based archetype
+        var registerRes = await client.PostAsJsonAsync("/api/v1/auth/register", new RegisterRequest(
+            "Fresh User",
+            email,
+            password,
+            "EUR",
+            "zero_based"
+        ));
+        Assert.Equal(HttpStatusCode.OK, registerRes.StatusCode);
+
+        // 2. Query budget: Betting MUST NOT be present
+        var budget = await client.GetFromJsonAsync<BudgetItemDto[]>("/api/v1/budget");
+        Assert.NotNull(budget);
+        Assert.DoesNotContain(budget!, b => b.Category.Equals("Betting", StringComparison.OrdinalIgnoreCase));
+
+        // 3. Query actions: Must not crash searching for hardcoded 'stanbic'
+        var actionsRes = await client.GetAsync("/api/v1/actions");
+        Assert.Equal(HttpStatusCode.OK, actionsRes.StatusCode);
+
+        // 4. Query business: Must not crash searching for hardcoded 'matchpredictor'
+        var bizRes = await client.GetAsync("/api/v1/business");
+        Assert.True(bizRes.StatusCode is HttpStatusCode.NoContent or HttpStatusCode.OK or HttpStatusCode.NotFound);
+
+        // 5. Query dashboard: Must not crash
+        var dashboard = await client.GetFromJsonAsync<DashboardDto>("/api/v1/dashboard");
+        Assert.NotNull(dashboard);
+
+        // 6. Verify accounts created match user's chosen archetype, no legacy Stanbic/OPay/Cowrywise
+        var accounts = await client.GetFromJsonAsync<AccountDto[]>("/api/v1/accounts");
+        Assert.NotNull(accounts);
+        Assert.NotEmpty(accounts!);
+        Assert.DoesNotContain(accounts!, a => a.Slug == "stanbic" || a.Slug == "opay" || a.Slug == "cowrywise-emergency");
+        Assert.Contains(accounts!, a => a.Slug == "primary-checking");
+    }
 }

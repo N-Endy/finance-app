@@ -186,7 +186,7 @@ public class FinancialEngineTests
         var draft = QuickEntryParser.Parse(
             "Transferred 100k to rotating savings from OPay",
             new DateOnly(2026, 8, 27),
-            new Dictionary<string, string> { ["opay"] = "opay" });
+            new Dictionary<string, string> { ["opay"] = "opay", ["rotating savings"] = "rotating-savings" });
 
         Assert.Equal(10_000_000, draft.AmountMinor);
         Assert.Equal(TransactionType.Transfer, draft.Type);

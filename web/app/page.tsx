@@ -75,7 +75,11 @@ export default function HomePage() {
         </Card>
         <Card title="This month, in words">
           <p className="sentence">{data.savingsRateSentence}</p>
-          <p className="sentence">Career/business: {data.thisMonth.careerBusiness.formatted}. Betting: {data.thisMonth.betting.formatted}. Transfers: {data.thisMonth.transfers.formatted} — those are not expenses.</p>
+          <p className="sentence">
+            Career/business: {data.thisMonth.careerBusiness.formatted}.
+            {data.thisMonth.betting && (data.thisMonth.betting.minor ?? 0) > 0 ? ` Betting: ${data.thisMonth.betting.formatted}.` : ""}
+            {" "}Transfers: {data.thisMonth.transfers.formatted} — those are movements of capital.
+          </p>
         </Card>
       </div>
 

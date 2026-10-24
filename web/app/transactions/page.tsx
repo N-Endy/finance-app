@@ -12,7 +12,7 @@ import type { Account, ParsedTransactionDraft, Preview, StatementParseResult, Tr
 export default function TransactionsPage() {
   const [rows, setRows] = useState<Transaction[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
-  const [text, setText] = useState("Lunch 4300 from OPay");
+  const [text, setText] = useState("");
   const [preview, setPreview] = useState<Preview | null>(null);
   const [aiParsed, setAiParsed] = useState<NaturalLanguageParseResult | null>(null);
   const [error, setError] = useState<string | null>(null);

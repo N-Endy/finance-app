@@ -20,7 +20,7 @@ const CATEGORY_PRESETS = [
 
 export default function BusinessPage() {
   const [businesses, setBusinesses] = useState<Business[]>([]);
-  const [selectedSlug, setSelectedSlug] = useState<string>("matchpredictor");
+  const [selectedSlug, setSelectedSlug] = useState<string>("");
   const [data, setData] = useState<Business | null>(null);
   const [subs, setSubs] = useState<Subscription[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -65,7 +65,7 @@ export default function BusinessPage() {
         api.taxReserveStatus().catch(() => null)
       ]);
 
-      const list = allBiz.length > 0 ? allBiz : [await api.business("matchpredictor")];
+      const list = allBiz;
       setBusinesses(list);
       setSubs(subscriptions);
       setAccounts(accs);
@@ -75,12 +75,19 @@ export default function BusinessPage() {
         setTxForm((prev) => ({ ...prev, accountId: accs[0].id }));
       }
 
-      const activeSlug = list.some((b) => b.slug === currentSlug) ? currentSlug : (list[0]?.slug ?? "matchpredictor");
-      setSelectedSlug(activeSlug);
+      if (list.length > 0) {
+        const activeSlug = list.some((b) => b.slug === currentSlug) ? currentSlug : (list[0]?.slug ?? "");
+        setSelectedSlug(activeSlug);
 
-      const current = await api.business(activeSlug);
-      setData(current);
-      setSplitEdit({ reinvest: current.reinvestPercent, personal: current.personalPercent });
+        const current = await api.business(activeSlug).catch(() => null);
+        setData(current);
+        if (current) {
+          setSplitEdit({ reinvest: current.reinvestPercent, personal: current.personalPercent });
+        }
+      } else {
+        setSelectedSlug("");
+        setData(null);
+      }
     } catch (err) {
       setError(failMessage(err));
     }
@@ -627,10 +634,21 @@ export default function BusinessPage() {
               </p>
             ))}
             {subs.filter((s) => s.isBusiness).length === 0 && (
-              <p className="lede">No active business subscriptions recorded on Access card.</p>
+              <p className="lede">No active business subscriptions recorded.</p>
             )}
           </Card>
         </>
+      ) : businesses.length === 0 ? (
+        <Card title="No Business Ventures Configured">
+          <p className="sentence">
+            Keep venture revenue, software costs, and profit splits distinct from your personal budget. Configure freelance practices, client streams, or products with automated tax reserves.
+          </p>
+          <div style={{ marginTop: 14 }}>
+            <button className="btn" type="button" onClick={() => setShowAddForm(true)}>
+              + Register Business or Venture
+            </button>
+          </div>
+        </Card>
       ) : (
         <p>Loading business ledger…</p>
       )}
