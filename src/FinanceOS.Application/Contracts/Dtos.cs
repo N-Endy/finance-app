@@ -267,6 +267,7 @@ public sealed record CreateEnvelopeRequest(
 public sealed record UpdateEnvelopeRequest(
     string Name,
     string Class,
+    decimal? PlannedAmount = null,
     string? Purpose = null,
     string? UseRule = null,
     bool IsEssential = false,
@@ -379,7 +380,7 @@ public sealed record HoldingDto(
     decimal? UnrealizedPnLMajor = null);
 
 public sealed record BudgetItemDto(
-    string Category, MoneyDto Budget, MoneyDto Actual, MoneyDto Remaining, string PercentUsed, string Status, string Sentence);
+    string Category, MoneyDto Budget, MoneyDto Actual, MoneyDto Remaining, string PercentUsed, string Status, string Sentence, Guid? EnvelopeId = null);
 
 public sealed record MoneyMapNodeDto(
     string Id, string Label, string Kind, MoneyDto? Amount, string Purpose, string WhenToUse, string IfSpent, IReadOnlyList<string> Children);

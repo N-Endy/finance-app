@@ -880,7 +880,14 @@ public sealed class FinanceOsService(
 
         if (!string.IsNullOrWhiteSpace(request.Name))
         {
-            env.Name = request.Name.Trim();
+            var trimmedName = request.Name.Trim();
+            env.Name = trimmedName;
+
+            var cats = await db.Categories.Where(c => c.EnvelopeId == env.Id).ToListAsync(ct);
+            foreach (var c in cats) c.Name = trimmedName;
+
+            var lines = await db.AllocationLines.Where(l => l.EnvelopeId == env.Id).ToListAsync(ct);
+            foreach (var l in lines) l.Name = trimmedName;
         }
         if (Enum.TryParse<EnvelopeClass>(request.Class, true, out var parsedClass))
         {
@@ -890,6 +897,34 @@ public sealed class FinanceOsService(
         if (request.UseRule is not null) env.UseRule = request.UseRule.Trim();
         env.IsEssential = request.IsEssential;
         env.IsActive = request.IsActive;
+
+        if (request.PlannedAmount.HasValue && request.PlannedAmount.Value >= 0)
+        {
+            var plan = await db.AllocationPlans.Include(p => p.Lines).FirstOrDefaultAsync(p => p.OwnerId == owner.Id && p.IsActive, ct)
+                       ?? await db.AllocationPlans.Include(p => p.Lines).FirstOrDefaultAsync(p => p.OwnerId == owner.Id, ct);
+            if (plan != null)
+            {
+                var minor = Money.FromMajor(request.PlannedAmount.Value, owner.BaseCurrency).MinorUnits;
+                var line = plan.Lines.FirstOrDefault(l => l.EnvelopeId == env.Id);
+                if (line != null)
+                {
+                    line.AmountMinor = minor;
+                }
+                else
+                {
+                    plan.Lines.Add(new AllocationLine
+                    {
+                        AllocationPlanId = plan.Id,
+                        EnvelopeId = env.Id,
+                        Name = env.Name,
+                        Kind = AllocationKind.Fixed,
+                        AmountMinor = minor,
+                        SortOrder = plan.Lines.Count + 1,
+                        Rule = $"Allocated to {env.Name}."
+                    });
+                }
+            }
+        }
 
         await db.SaveChangesAsync(ct);
         await AuditAsync(owner.Id, "update-envelope", "Envelope", env.Id, $"Updated envelope {env.Name}.", ct);
@@ -902,6 +937,9 @@ public sealed class FinanceOsService(
         var env = await db.Envelopes.FirstOrDefaultAsync(e => e.Id == id && e.OwnerId == owner.Id, ct)
             ?? throw new DomainException("Envelope not found.");
 
+        var planLines = await db.AllocationLines.Where(l => l.EnvelopeId == id).ToListAsync(ct);
+        db.AllocationLines.RemoveRange(planLines);
+
         var hasTxs = await db.Transactions.AnyAsync(t => t.EnvelopeId == id && !t.IsVoided, ct);
         if (hasTxs)
         {
@@ -909,8 +947,6 @@ public sealed class FinanceOsService(
         }
         else
         {
-            var planLines = await db.AllocationLines.Where(l => l.EnvelopeId == id).ToListAsync(ct);
-            db.AllocationLines.RemoveRange(planLines);
             var cats = await db.Categories.Where(c => c.EnvelopeId == id).ToListAsync(ct);
             foreach (var c in cats) c.EnvelopeId = null;
             db.Envelopes.Remove(env);
@@ -1224,11 +1260,13 @@ public sealed class FinanceOsService(
 
         var items = new List<BudgetItemDto>();
         var allLines = plans.SelectMany(p => p.Lines)
-            .Where(l => l.Envelope is { Class: EnvelopeClass.Spend or EnvelopeClass.Committed or EnvelopeClass.Sinking or EnvelopeClass.Business })
+            .Where(l => l.Envelope != null && l.Envelope.IsActive && (l.Envelope.Class is EnvelopeClass.Spend or EnvelopeClass.Committed or EnvelopeClass.Sinking or EnvelopeClass.Business))
             .ToList();
 
+        var coveredEnvelopeIds = new HashSet<Guid>();
         foreach (var line in allLines)
         {
+            if (line.EnvelopeId.HasValue) coveredEnvelopeIds.Add(line.EnvelopeId.Value);
             var actual = txs.Where(t => 
                 (t.EnvelopeId == line.EnvelopeId || (t.EnvelopeId == null && t.Category != null && t.Category.EnvelopeId == line.EnvelopeId)) 
                 && t.Type is TransactionType.Expense or TransactionType.Fee)
@@ -1241,7 +1279,29 @@ public sealed class FinanceOsService(
                 MoneyDto.Of(budget - actual, owner.BaseCurrency, Provenance.Confirmed),
                 percent is null ? "UNKNOWN" : $"{percent:0.#}%",
                 status.ToString(),
-                sentence));
+                sentence,
+                line.EnvelopeId));
+        }
+
+        var otherActiveEnvelopes = await db.Envelopes
+            .Where(e => e.OwnerId == owner.Id && e.IsActive && e.Class != EnvelopeClass.DoNotTouch && !coveredEnvelopeIds.Contains(e.Id))
+            .ToListAsync(ct);
+
+        foreach (var env in otherActiveEnvelopes)
+        {
+            var actual = txs.Where(t => 
+                (t.EnvelopeId == env.Id || (t.EnvelopeId == null && t.Category != null && t.Category.EnvelopeId == env.Id)) 
+                && t.Type is TransactionType.Expense or TransactionType.Fee)
+                .Sum(t => t.AmountMinor);
+            var (status, sentence, percent) = BudgetStatusCalculator.Evaluate(0, actual, owner.WatchPercent, owner.WarningPercent, owner.OverBudgetPercent);
+            items.Add(new BudgetItemDto(env.Name,
+                MoneyDto.Of(0, owner.BaseCurrency, Provenance.Plan),
+                MoneyDto.Of(actual, owner.BaseCurrency, Provenance.Confirmed),
+                MoneyDto.Of(-actual, owner.BaseCurrency, Provenance.Confirmed),
+                "0%",
+                status.ToString(),
+                sentence,
+                env.Id));
         }
 
         var bettingActual = txs.Where(t => t.Category is { IsBetting: true }).Sum(t => t.AmountMinor);
@@ -1278,9 +1338,32 @@ public sealed class FinanceOsService(
             .Where(l => planIds.Contains(l.AllocationPlanId))
             .ToListAsync(ct);
         var line = lines.SingleOrDefault(l => string.Equals(l.Name, category, StringComparison.OrdinalIgnoreCase))
-                   ?? lines.FirstOrDefault(l => l.Name.Contains(category, StringComparison.OrdinalIgnoreCase))
-                   ?? throw new DomainException($"No allocation line named {category}.");
-        line.AmountMinor = Money.NgnFromMajor(amount).MinorUnits;
+                   ?? lines.FirstOrDefault(l => l.Name.Contains(category, StringComparison.OrdinalIgnoreCase));
+
+        if (line != null)
+        {
+            line.AmountMinor = Money.FromMajor(amount, owner.BaseCurrency).MinorUnits;
+        }
+        else
+        {
+            var plan = await db.AllocationPlans.Include(p => p.Lines).FirstOrDefaultAsync(p => p.OwnerId == owner.Id && p.IsActive, ct)
+                       ?? await db.AllocationPlans.Include(p => p.Lines).FirstOrDefaultAsync(p => p.OwnerId == owner.Id, ct);
+            if (plan != null)
+            {
+                var env = await db.Envelopes.FirstOrDefaultAsync(e => e.OwnerId == owner.Id && e.Name.ToLower() == category.ToLower(), ct);
+                var minor = Money.FromMajor(amount, owner.BaseCurrency).MinorUnits;
+                plan.Lines.Add(new AllocationLine
+                {
+                    AllocationPlanId = plan.Id,
+                    EnvelopeId = env?.Id,
+                    Name = category,
+                    Kind = AllocationKind.Fixed,
+                    AmountMinor = minor,
+                    SortOrder = plan.Lines.Count + 1,
+                    Rule = $"Allocated to {category}."
+                });
+            }
+        }
         await db.SaveChangesAsync(ct);
     }
 

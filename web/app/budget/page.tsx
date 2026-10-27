@@ -46,6 +46,14 @@ export default function BudgetPage() {
   const [newEnvBudget, setNewEnvBudget] = useState("");
   const [newEnvPurpose, setNewEnvPurpose] = useState("");
 
+  const [editingEnvelope, setEditingEnvelope] = useState<{
+    id: string;
+    name: string;
+    class: string;
+    plannedAmount: string;
+    purpose: string;
+  } | null>(null);
+
   const today = new Date();
   const date = today.toISOString().slice(0, 10);
 
@@ -257,6 +265,57 @@ export default function BudgetPage() {
     }
   }
 
+  function startEditEnvelope(env: Envelope, item?: BudgetItem) {
+    setEditingEnvelope({
+      id: env.id,
+      name: env.name,
+      class: env.class || "Spend",
+      plannedAmount: item?.budget.major != null ? String(item.budget.major) : "",
+      purpose: env.purpose || ""
+    });
+  }
+
+  async function handleSaveEditEnvelope(e: FormEvent) {
+    e.preventDefault();
+    if (!editingEnvelope || !editingEnvelope.name.trim()) return;
+    setError(null);
+    setMessage(null);
+    setBusy("edit-envelope");
+    try {
+      await api.updateEnvelope(editingEnvelope.id, {
+        name: editingEnvelope.name.trim(),
+        class: editingEnvelope.class,
+        plannedAmount: editingEnvelope.plannedAmount ? parseFloat(editingEnvelope.plannedAmount) : undefined,
+        purpose: editingEnvelope.purpose.trim() || undefined
+      });
+      setEditingEnvelope(null);
+      await load();
+      setMessage(`Envelope "${editingEnvelope.name}" updated successfully.`);
+    } catch (err) {
+      setError(failMessage(err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function handleDeleteEnvelope(env: Envelope) {
+    if (!confirm(`Are you sure you want to remove or archive "${env.name}"? If any transactions are attached to it, it will be safely archived; otherwise, it will be deleted.`)) {
+      return;
+    }
+    setError(null);
+    setMessage(null);
+    setBusy(`delete-${env.id}`);
+    try {
+      await api.deleteEnvelope(env.id);
+      await load();
+      setMessage(`Envelope "${env.name}" was removed/archived.`);
+    } catch (err) {
+      setError(failMessage(err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
   return (
     <Shell>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: "1rem", marginBottom: "0.5rem" }}>
@@ -325,6 +384,77 @@ export default function BudgetPage() {
                 {busy === "create-envelope" ? "Saving..." : "Create Envelope"}
               </button>
               <button className="btn ghost" type="button" onClick={() => setShowAddEnvelope(false)}>Cancel</button>
+            </div>
+          </form>
+        </Card>
+      )}
+
+      {editingEnvelope && (
+        <Card title={`Edit Envelope: ${editingEnvelope.name}`}>
+          <form className="stack" onSubmit={handleSaveEditEnvelope}>
+            <div className="grid two" style={{ gap: "1rem" }}>
+              <div>
+                <label style={{ display: "block", fontSize: "0.82rem", fontWeight: 600, marginBottom: "0.3rem" }}>
+                  Envelope Name *
+                </label>
+                <input
+                  required
+                  placeholder="e.g. Groceries & Essentials"
+                  value={editingEnvelope.name}
+                  onChange={(e) => setEditingEnvelope({ ...editingEnvelope, name: e.target.value })}
+                />
+              </div>
+              <div>
+                <label style={{ display: "block", fontSize: "0.82rem", fontWeight: 600, marginBottom: "0.3rem" }}>
+                  Envelope Class
+                </label>
+                <select
+                  value={editingEnvelope.class}
+                  onChange={(e) => setEditingEnvelope({ ...editingEnvelope, class: e.target.value })}
+                >
+                  <option value="Spend">Spend (Discretionary, dining, daily lifestyle)</option>
+                  <option value="Committed">Committed (Fixed bills, rent, utilities)</option>
+                  <option value="Savings">Savings & Sinking Funds (Future planned expenses)</option>
+                  <option value="Emergency">Emergency Reserve (Uncompromised safety cushion)</option>
+                  <option value="Business">Business Expense (Tools, operating costs)</option>
+                  <option value="Investment">Investment & Wealth Accumulation</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="grid two" style={{ gap: "1rem" }}>
+              <div>
+                <label style={{ display: "block", fontSize: "0.82rem", fontWeight: 600, marginBottom: "0.3rem" }}>
+                  Monthly Planned Budget
+                </label>
+                <input
+                  type="number"
+                  step="any"
+                  min="0"
+                  placeholder="0.00"
+                  value={editingEnvelope.plannedAmount}
+                  onChange={(e) => setEditingEnvelope({ ...editingEnvelope, plannedAmount: e.target.value })}
+                />
+              </div>
+              <div>
+                <label style={{ display: "block", fontSize: "0.82rem", fontWeight: 600, marginBottom: "0.3rem" }}>
+                  Purpose or Operating Rule
+                </label>
+                <input
+                  placeholder="e.g. Weekly supermarket shopping and essential household supplies"
+                  value={editingEnvelope.purpose}
+                  onChange={(e) => setEditingEnvelope({ ...editingEnvelope, purpose: e.target.value })}
+                />
+              </div>
+            </div>
+
+            <div className="row" style={{ marginTop: "0.5rem" }}>
+              <button className="btn" type="submit" disabled={busy === "edit-envelope"}>
+                {busy === "edit-envelope" ? "Saving..." : "Save Changes"}
+              </button>
+              <button className="btn ghost" type="button" onClick={() => setEditingEnvelope(null)}>
+                Cancel
+              </button>
             </div>
           </form>
         </Card>
@@ -602,22 +732,53 @@ export default function BudgetPage() {
       )}
 
       <div className="grid two">
-        {items.map((item) => (
-          <Card key={item.category} title={item.category}>
-            <span className={`badge ${item.status.toLowerCase()}`}>{item.status}</span>
-            <p className="sentence">{item.sentence}</p>
-            <p className="lede">Actual {item.actual.formatted} · remaining {item.remaining.formatted} · {item.percentUsed}</p>
-            <form className="row" onSubmit={(event) => saveBudget(event, item.category)}>
-              <input
-                value={drafts[item.category] ?? ""}
-                onChange={(e) => setDrafts((current) => ({ ...current, [item.category]: e.target.value }))}
-                inputMode="decimal"
-                aria-label={`${item.category} budget`}
-              />
-              <button className="btn" type="submit" disabled={busy === item.category}>Save</button>
-            </form>
-          </Card>
-        ))}
+        {items.map((item) => {
+          const env = envelopes.find((e) => (item.envelopeId && e.id === item.envelopeId) || e.name.toLowerCase() === item.category.toLowerCase() || e.slug === item.category.toLowerCase());
+          return (
+            <Card key={item.category} title={item.category}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.5rem" }}>
+                <span className={`badge ${item.status.toLowerCase()}`}>{item.status}</span>
+                {env && (
+                  <span style={{ fontSize: "0.75rem", color: "var(--muted, #8e9e96)" }}>
+                    {env.class}
+                  </span>
+                )}
+              </div>
+              <p className="sentence">{item.sentence}</p>
+              <p className="lede">Actual {item.actual.formatted} · remaining {item.remaining.formatted} · {item.percentUsed}</p>
+              <form className="row" onSubmit={(event) => saveBudget(event, item.category)}>
+                <input
+                  value={drafts[item.category] ?? ""}
+                  onChange={(e) => setDrafts((current) => ({ ...current, [item.category]: e.target.value }))}
+                  inputMode="decimal"
+                  aria-label={`${item.category} budget`}
+                />
+                <button className="btn" type="submit" disabled={busy === item.category}>Save</button>
+              </form>
+              {env && (
+                <div className="row" style={{ marginTop: "0.75rem", justifyContent: "space-between", borderTop: "1px solid rgba(255,255,255,0.06)", paddingTop: "0.5rem" }}>
+                  <button
+                    type="button"
+                    className="btn ghost"
+                    style={{ fontSize: "0.82rem", padding: "0.35rem 0.65rem" }}
+                    onClick={() => startEditEnvelope(env, item)}
+                  >
+                    ✏️ Edit
+                  </button>
+                  <button
+                    type="button"
+                    className="btn ghost"
+                    style={{ fontSize: "0.82rem", padding: "0.35rem 0.65rem", color: "#ef4444" }}
+                    disabled={busy === `delete-${env.id}`}
+                    onClick={() => void handleDeleteEnvelope(env)}
+                  >
+                    {busy === `delete-${env.id}` ? "Removing..." : "🗑️ Delete"}
+                  </button>
+                </div>
+              )}
+            </Card>
+          );
+        })}
       </div>
 
       {salary.length > 0 && (

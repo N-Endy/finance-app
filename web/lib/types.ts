@@ -84,7 +84,7 @@ export type Transaction = { id: string; date: string; type: string; accountId: s
 export type Preview = { proposed?: Record<string, unknown> | null; summary: string; questions: string[]; balanceImpacts: string[]; budgetImpacts: string[]; canCommit: boolean };
 export type Goal = { id: string; slug: string; name: string; kind: string; target: Money; current: Money; progressSentence: string; monthly: Money; isAspiration: boolean };
 export type Envelope = { id: string; slug: string; name: string; class: string; purpose: string; useRule: string };
-export type BudgetItem = { category: string; budget: Money; actual: Money; remaining: Money; percentUsed: string; status: string; sentence: string };
+export type BudgetItem = { category: string; budget: Money; actual: Money; remaining: Money; percentUsed: string; status: string; sentence: string; envelopeId?: string | null };
 export type Holding = {
   id: string;
   name: string;
