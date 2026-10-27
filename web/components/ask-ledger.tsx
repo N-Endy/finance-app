@@ -29,7 +29,7 @@ export function AskLedger() {
     <Card title="Ask the ledger">
       <p className="lede">Answers come from recorded facts. Missing balances stay UNKNOWN.</p>
       <form className="stack" onSubmit={ask}>
-        <input value={question} onChange={(e) => setQuestion(e.target.value)} placeholder="How much has MatchPredictor cost me?" />
+        <input value={question} onChange={(e) => setQuestion(e.target.value)} placeholder="e.g. How much did I spend on dining out this month?" />
         <button className="btn ghost" type="submit" disabled={busy}>Ask</button>
       </form>
       {error && <p className="error">{error}</p>}

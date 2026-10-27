@@ -26,6 +26,49 @@ export default function HomePage() {
       <h1>How am I doing financially?</h1>
       <p className="lede">Net worth, spendable cash, and the jobs your money already has.</p>
 
+      {data.hasLegacyDemoData && (
+        <div style={{
+          background: "linear-gradient(135deg, rgba(234, 179, 8, 0.12), rgba(234, 179, 8, 0.04))",
+          border: "1px solid rgba(234, 179, 8, 0.35)",
+          borderRadius: "10px",
+          padding: "1rem 1.25rem",
+          marginBottom: "1.25rem",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          flexWrap: "wrap",
+          gap: "1rem"
+        }}>
+          <div>
+            <strong style={{ color: "#fef08a", fontSize: "0.95rem" }}>Sample Demo Data Loaded</strong>
+            <p style={{ margin: "0.25rem 0 0", color: "#fef9c3", fontSize: "0.85rem", opacity: 0.9 }}>
+              Your workspace currently has demo accounts (Stanbic, OPay, Cowrywise) loaded. You can clear this anytime and configure your real bank accounts and currency.
+            </p>
+          </div>
+          <button
+            className="btn"
+            style={{
+              background: "#ca8a04",
+              color: "#000",
+              fontWeight: 700,
+              padding: "0.55rem 1rem",
+              borderRadius: "6px",
+              cursor: "pointer",
+              border: "none",
+              fontSize: "0.85rem"
+            }}
+            onClick={async () => {
+              if (confirm("Reset workspace and start fresh with your real accounts?")) {
+                await api.resetWorkspace();
+                window.location.href = "/onboarding";
+              }
+            }}
+          >
+            Start Fresh With My Real Accounts →
+          </button>
+        </div>
+      )}
+
       <OfflineIndicator />
 
       {data.unknowns.length > 0 && (

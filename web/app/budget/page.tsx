@@ -40,6 +40,12 @@ export default function BudgetPage() {
   const [radar, setRadar] = useState<BurnVelocityRadar | null>(null);
   const [aiPlan, setAiPlan] = useState<AiPaydayAllocationPlan | null>(null);
 
+  const [showAddEnvelope, setShowAddEnvelope] = useState(false);
+  const [newEnvName, setNewEnvName] = useState("");
+  const [newEnvClass, setNewEnvClass] = useState("Spend");
+  const [newEnvBudget, setNewEnvBudget] = useState("");
+  const [newEnvPurpose, setNewEnvPurpose] = useState("");
+
   const today = new Date();
   const date = today.toISOString().slice(0, 10);
 
@@ -226,10 +232,104 @@ export default function BudgetPage() {
     }
   }
 
+  async function saveNewEnvelope(e: FormEvent) {
+    e.preventDefault();
+    if (!newEnvName.trim()) return;
+    setError(null);
+    setBusy("create-envelope");
+    try {
+      await api.createEnvelope({
+        name: newEnvName.trim(),
+        class: newEnvClass,
+        plannedAmount: newEnvBudget ? parseFloat(newEnvBudget) : 0,
+        purpose: newEnvPurpose.trim() || undefined
+      });
+      setShowAddEnvelope(false);
+      setNewEnvName("");
+      setNewEnvBudget("");
+      setNewEnvPurpose("");
+      await load();
+      setMessage("Envelope created successfully.");
+    } catch (err) {
+      setError(failMessage(err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
   return (
     <Shell>
-      <h1>Zero-Based Envelope Budgeting</h1>
-      <p className="lede">Give every dollar, pound, or naira a job. Budget, actual, and remaining for each category.</p>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: "1rem", marginBottom: "0.5rem" }}>
+        <div>
+          <h1>Zero-Based Envelope Budgeting</h1>
+          <p className="lede">Give every dollar, pound, or naira a job. Budget, actual, and remaining for each category.</p>
+        </div>
+        <button
+          className="btn"
+          style={{ whiteSpace: "nowrap", padding: "0.6rem 1.2rem", fontWeight: 600 }}
+          onClick={() => setShowAddEnvelope(!showAddEnvelope)}
+        >
+          {showAddEnvelope ? "Cancel" : "+ Add Envelope"}
+        </button>
+      </div>
+
+      {showAddEnvelope && (
+        <Card title="Add a New Spending Envelope">
+          <form className="stack" onSubmit={saveNewEnvelope}>
+            <div className="grid two" style={{ gap: "1rem" }}>
+              <div>
+                <label style={{ display: "block", fontSize: "0.82rem", fontWeight: 600, marginBottom: "0.3rem" }}>Envelope Name *</label>
+                <input
+                  required
+                  placeholder="e.g. Groceries, Gym, Vehicle Maintenance, Dining Out"
+                  value={newEnvName}
+                  onChange={(e) => setNewEnvName(e.target.value)}
+                />
+              </div>
+              <div>
+                <label style={{ display: "block", fontSize: "0.82rem", fontWeight: 600, marginBottom: "0.3rem" }}>Envelope Class</label>
+                <select value={newEnvClass} onChange={(e) => setNewEnvClass(e.target.value)}>
+                  <option value="Spend">Spend (Discretionary, dining, daily lifestyle)</option>
+                  <option value="Committed">Committed (Fixed bills, rent, utilities)</option>
+                  <option value="Savings">Savings & Sinking Funds (Future planned expenses)</option>
+                  <option value="Emergency">Emergency Reserve (Uncompromised safety cushion)</option>
+                  <option value="Business">Business Expense (Tools, operating costs)</option>
+                  <option value="Investment">Investment & Wealth Accumulation</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="grid two" style={{ gap: "1rem" }}>
+              <div>
+                <label style={{ display: "block", fontSize: "0.82rem", fontWeight: 600, marginBottom: "0.3rem" }}>Monthly Planned Budget</label>
+                <input
+                  type="number"
+                  step="any"
+                  placeholder="0.00"
+                  value={newEnvBudget}
+                  onChange={(e) => setNewEnvBudget(e.target.value)}
+                />
+              </div>
+              <div>
+                <label style={{ display: "block", fontSize: "0.82rem", fontWeight: 600, marginBottom: "0.3rem" }}>Purpose or Operating Rule</label>
+                <input
+                  placeholder="e.g. Weekly supermarket shopping and essential household supplies"
+                  value={newEnvPurpose}
+                  onChange={(e) => setNewEnvPurpose(e.target.value)}
+                />
+              </div>
+            </div>
+
+            <div className="row" style={{ marginTop: "0.5rem" }}>
+              <button className="btn" type="submit" disabled={busy === "create-envelope"}>
+                {busy === "create-envelope" ? "Saving..." : "Create Envelope"}
+              </button>
+              <button className="btn ghost" type="button" onClick={() => setShowAddEnvelope(false)}>Cancel</button>
+            </div>
+          </form>
+        </Card>
+      )}
+
       {message && <p className="sentence">{message}</p>}
       {error && <p className="error">{error}</p>}
 

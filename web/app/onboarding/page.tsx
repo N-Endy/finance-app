@@ -75,6 +75,8 @@ export default function OnboardingPage() {
     { code: "EUR", symbol: "€", name: "Euro" },
     { code: "GBP", symbol: "£", name: "British Pound" },
     { code: "NGN", symbol: "₦", name: "Nigerian Naira" },
+    { code: "CAD", symbol: "CA$", name: "Canadian Dollar" },
+    { code: "AUD", symbol: "A$", name: "Australian Dollar" },
     { code: "USDT", symbol: "₮", name: "Tether USD" }
   ];
 
@@ -183,7 +185,7 @@ export default function OnboardingPage() {
                 type="text"
                 value={accountName}
                 onChange={(e) => setAccountName(e.target.value)}
-                placeholder="e.g. Chase Checking, Revolut, Stanbic"
+                placeholder="e.g. Chase Checking, Barclays, Revolut, Primary Bank"
                 style={{ width: "100%", padding: "0.75rem", borderRadius: "6px", border: "1px solid rgba(255,255,255,0.1)", background: "rgba(0,0,0,0.2)", color: "#fff" }}
               />
             </div>

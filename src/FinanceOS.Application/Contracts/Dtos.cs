@@ -41,7 +41,7 @@ public sealed record AuthStatusDto(
     string? Email = null,
     string? BaseCurrency = "NGN",
     bool OnboardingCompleted = true);
-public sealed record SetupRequest(string DisplayName, string Email, string Password);
+public sealed record SetupRequest(string DisplayName, string Email, string Password, string? BaseCurrency = "USD", string? Archetype = null);
 public sealed record RegisterRequest(string DisplayName, string Email, string Password, string? BaseCurrency = "USD", string? Archetype = null);
 public sealed record LoginRequest(string Email, string Password);
 
@@ -239,6 +239,39 @@ public sealed record AccountDto(
 public sealed record SnapshotRequest(decimal Amount, string Currency, DateOnly AsOf, string Provenance, string? Notes, string? Source = null);
 public sealed record AssignmentRequest(Guid EnvelopeId, decimal Amount, DateOnly AsOf, string? Notes);
 
+public sealed record CreateAccountRequest(
+    string Name,
+    string? Institution,
+    string Role,
+    string? Currency = null,
+    decimal? InitialBalance = null,
+    string? Job = null,
+    string? DoNotPutHere = null);
+
+public sealed record UpdateAccountRequest(
+    string Name,
+    string? Institution,
+    string Role,
+    string? Job = null,
+    string? DoNotPutHere = null,
+    bool IsActive = true);
+
+public sealed record CreateEnvelopeRequest(
+    string Name,
+    string Class,
+    decimal? PlannedAmount = null,
+    string? Purpose = null,
+    string? UseRule = null,
+    bool IsEssential = false);
+
+public sealed record UpdateEnvelopeRequest(
+    string Name,
+    string Class,
+    string? Purpose = null,
+    string? UseRule = null,
+    bool IsEssential = false,
+    bool IsActive = true);
+
 public sealed record TransactionDto(
     Guid Id,
     DateOnly Date,
@@ -301,7 +334,8 @@ public sealed record DashboardDto(
     string SpendableSentence,
     ThisMonthDto ThisMonth,
     IReadOnlyList<string> ActionRequired,
-    IReadOnlyList<UnknownFactDto> Unknowns);
+    IReadOnlyList<UnknownFactDto> Unknowns,
+    bool HasLegacyDemoData = false);
 
 public sealed record UnknownFactDto(string Text, string Href);
 

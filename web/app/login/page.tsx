@@ -41,8 +41,18 @@ export default function LoginPage() {
 
     try {
       if (status?.needsSetup) {
-        await api.setup({ displayName: name || "User", email, password });
-        router.replace("/");
+        const res = await api.setup({
+          displayName: name || "User",
+          email,
+          password,
+          baseCurrency,
+          archetype
+        }) as AuthStatus | undefined;
+        if (!res?.onboardingCompleted) {
+          router.replace("/onboarding");
+        } else {
+          router.replace("/");
+        }
       } else if (mode === "register") {
         const res = await api.register({
           displayName: name || "User",
@@ -71,7 +81,21 @@ export default function LoginPage() {
     }
   }
 
-  const isSetup = status?.needsSetup;
+  if (status === null) {
+    return (
+      <div className="auth" style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: "1.5rem" }}>
+        <div className="card auth-card stack" style={{ maxWidth: "440px", width: "100%", padding: "2.5rem", textAlign: "center" }}>
+          <h1 style={{ fontSize: "1.85rem", fontWeight: 700, letterSpacing: "-0.03em", margin: 0 }}>Finance OS</h1>
+          <p className="lede" style={{ fontSize: "0.95rem", color: "var(--muted)", marginTop: "0.4rem" }}>
+            Give every dollar, pound, or naira a job.
+          </p>
+          <div style={{ marginTop: "2rem", opacity: 0.6, fontSize: "0.9rem" }}>Loading financial workspace…</div>
+        </div>
+      </div>
+    );
+  }
+
+  const isSetup = status.needsSetup;
 
   return (
     <div className="auth" style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: "1.5rem" }}>
@@ -162,7 +186,7 @@ export default function LoginPage() {
             />
           </div>
 
-          {mode === "register" && !isSetup && (
+          {(mode === "register" || isSetup) && (
             <>
               <div>
                 <label style={{ display: "block", fontSize: "0.82rem", fontWeight: 600, marginBottom: "0.3rem" }}>Primary Base Currency</label>

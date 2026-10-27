@@ -109,16 +109,30 @@ public sealed class FinanceOsService(
             throw new DomainException("Choose a password of at least 10 characters.");
         }
 
+        var ccy = TemplateEngine.ParseCurrency(request.BaseCurrency);
+        var hasArchetype = !string.IsNullOrWhiteSpace(request.Archetype);
         var owner = new Owner
         {
-            DisplayName = string.IsNullOrWhiteSpace(request.DisplayName) ? "Nnamdi" : request.DisplayName.Trim(),
-            Email = request.Email.Trim().ToLowerInvariant()
+            DisplayName = string.IsNullOrWhiteSpace(request.DisplayName) ? "User" : request.DisplayName.Trim(),
+            Email = email,
+            BaseCurrency = ccy,
+            Archetype = request.Archetype,
+            OnboardingCompleted = hasArchetype
         };
         owner.PasswordHash = passwords.HashPassword(owner, request.Password);
         db.Owners.Add(owner);
         await db.SaveChangesAsync(ct);
-        await PlanSeeder.SeedAsync(db, owner, ct);
-        await AuditAsync(owner.Id, "setup", "Owner", owner.Id, "Owner created and plan snapshot seeded.", ct);
+
+        if (hasArchetype)
+        {
+            await TemplateEngine.ApplyTemplateAsync(db, owner, request.Archetype!, ccy, 0, null, ct);
+        }
+        else if (email.Equals("nnamdi@local", StringComparison.OrdinalIgnoreCase))
+        {
+            await PlanSeeder.SeedAsync(db, owner, ct);
+        }
+
+        await AuditAsync(owner.Id, "setup", "Owner", owner.Id, $"Owner created with {owner.BaseCurrency}.", ct);
         return owner;
     }
 
@@ -154,6 +168,8 @@ public sealed class FinanceOsService(
             ? "Savings rate is UNKNOWN this month because no income has been recorded yet."
             : $"This month you directed {Money.FromMajor(saved / 100m, owner.BaseCurrency)} of {Money.FromMajor(income / 100m, owner.BaseCurrency)} toward savings and investments.";
 
+        var hasLegacyDemo = await db.Accounts.AnyAsync(a => a.OwnerId == owner.Id && (a.Slug == "stanbic" || a.Slug == "cowrywise-emergency" || a.Slug == "cowrywise-mmf"), ct);
+
         return new DashboardDto(
             netWorth.Result,
             await LiquidCashAsync(owner, ct),
@@ -171,7 +187,8 @@ public sealed class FinanceOsService(
             spendable.Sentence,
             month,
             actions.Select(a => a.Title).Take(8).ToList(),
-            unknowns);
+            unknowns,
+            hasLegacyDemo);
     }
 
     public async Task<ExplainDto> ExplainAsync(string metric, CancellationToken ct)
@@ -207,6 +224,126 @@ public sealed class FinanceOsService(
         }
 
         return result;
+    }
+
+    public async Task<AccountDto> CreateAccountAsync(CreateAccountRequest request, CancellationToken ct)
+    {
+        var owner = await RequireOwner(ct);
+        var name = request.Name.Trim();
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            throw new DomainException("Account name is required.");
+        }
+
+        var slug = Slugify(name);
+        if (string.IsNullOrWhiteSpace(slug)) slug = "account";
+        var count = await db.Accounts.CountAsync(a => a.OwnerId == owner.Id && a.Slug.StartsWith(slug), ct);
+        if (count > 0)
+        {
+            slug = $"{slug}-{count + 1}";
+        }
+
+        var role = Enum.TryParse<AccountRole>(request.Role, true, out var parsedRole) ? parsedRole : AccountRole.DailySpending;
+        var ccy = !string.IsNullOrWhiteSpace(request.Currency) ? TemplateEngine.ParseCurrency(request.Currency) : owner.BaseCurrency;
+
+        var account = new FinancialAccount
+        {
+            OwnerId = owner.Id,
+            Name = name,
+            Slug = slug,
+            Institution = string.IsNullOrWhiteSpace(request.Institution) ? name : request.Institution.Trim(),
+            Role = role,
+            Currency = ccy,
+            AllowsDailySpending = role is AccountRole.DailySpending or AccountRole.Clearing or AccountRole.CashOnHand,
+            Job = string.IsNullOrWhiteSpace(request.Job) ? $"{name} account." : request.Job.Trim(),
+            DoNotPutHere = request.DoNotPutHere?.Trim() ?? string.Empty
+        };
+
+        db.Accounts.Add(account);
+        await db.SaveChangesAsync(ct);
+
+        if (request.InitialBalance.HasValue && request.InitialBalance.Value != 0)
+        {
+            var minor = Money.FromMajor(request.InitialBalance.Value, ccy).MinorUnits;
+            db.BalanceSnapshots.Add(new BalanceSnapshot
+            {
+                AccountId = account.Id,
+                AmountMinor = minor,
+                Currency = ccy,
+                AsOf = MoneyMapping.Today(),
+                Provenance = Provenance.Confirmed,
+                Source = "opening",
+                Notes = "Opening balance entered during account setup."
+            });
+            await db.SaveChangesAsync(ct);
+        }
+
+        await AuditAsync(owner.Id, "create-account", "FinancialAccount", account.Id, $"Created account {account.Name}.", ct);
+        return (await AccountsAsync(ct)).First(a => a.Id == account.Id);
+    }
+
+    public async Task<AccountDto> UpdateAccountAsync(Guid id, UpdateAccountRequest request, CancellationToken ct)
+    {
+        var owner = await RequireOwner(ct);
+        var account = await db.Accounts.FirstOrDefaultAsync(a => a.Id == id && a.OwnerId == owner.Id, ct)
+            ?? throw new DomainException("Account not found.");
+
+        if (!string.IsNullOrWhiteSpace(request.Name))
+        {
+            account.Name = request.Name.Trim();
+        }
+        if (request.Institution is not null)
+        {
+            account.Institution = request.Institution.Trim();
+        }
+        if (Enum.TryParse<AccountRole>(request.Role, true, out var parsedRole))
+        {
+            account.Role = parsedRole;
+            account.AllowsDailySpending = parsedRole is AccountRole.DailySpending or AccountRole.Clearing or AccountRole.CashOnHand;
+        }
+        if (request.Job is not null)
+        {
+            account.Job = request.Job.Trim();
+        }
+        if (request.DoNotPutHere is not null)
+        {
+            account.DoNotPutHere = request.DoNotPutHere.Trim();
+        }
+        account.IsActive = request.IsActive;
+
+        await db.SaveChangesAsync(ct);
+        await AuditAsync(owner.Id, "update-account", "FinancialAccount", account.Id, $"Updated account {account.Name}.", ct);
+        return (await AccountsAsync(ct)).First(a => a.Id == account.Id);
+    }
+
+    public async Task DeleteAccountByIdAsync(Guid id, CancellationToken ct)
+    {
+        var owner = await RequireOwner(ct);
+        var account = await db.Accounts.FirstOrDefaultAsync(a => a.Id == id && a.OwnerId == owner.Id, ct)
+            ?? throw new DomainException("Account not found.");
+
+        var hasTxs = await db.Transactions.AnyAsync(t => (t.AccountId == id || t.CounterpartyAccountId == id) && !t.IsVoided, ct);
+        if (hasTxs)
+        {
+            account.IsActive = false;
+        }
+        else
+        {
+            var snaps = await db.BalanceSnapshots.Where(s => s.AccountId == id).ToListAsync(ct);
+            db.BalanceSnapshots.RemoveRange(snaps);
+            var assigns = await db.Assignments.Where(a => a.AccountId == id).ToListAsync(ct);
+            db.Assignments.RemoveRange(assigns);
+            db.Accounts.Remove(account);
+        }
+
+        await db.SaveChangesAsync(ct);
+        await AuditAsync(owner.Id, "delete-account", "FinancialAccount", id, $"Deleted/archived account {account.Name}.", ct);
+    }
+
+    private static string Slugify(string input)
+    {
+        var cleaned = System.Text.RegularExpressions.Regex.Replace(input.ToLowerInvariant(), @"[^a-z0-9\s-]", "");
+        return System.Text.RegularExpressions.Regex.Replace(cleaned, @"\s+", "-").Trim('-');
     }
 
     public async Task<ReconciliationResult> AccountReconciliationAsync(Guid accountId, CancellationToken ct)
@@ -672,6 +809,125 @@ public sealed class FinanceOsService(
             .OrderBy(e => e.Name)
             .Select(e => new EnvelopeDto(e.Id, e.Slug, e.Name, e.Class.ToString(), e.Purpose, e.UseRule))
             .ToListAsync(ct);
+    }
+
+    public async Task<EnvelopeDto> CreateEnvelopeAsync(CreateEnvelopeRequest request, CancellationToken ct)
+    {
+        var owner = await RequireOwner(ct);
+        var name = request.Name.Trim();
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            throw new DomainException("Envelope name is required.");
+        }
+
+        var slug = Slugify(name);
+        if (string.IsNullOrWhiteSpace(slug)) slug = "envelope";
+        var count = await db.Envelopes.CountAsync(e => e.OwnerId == owner.Id && e.Slug.StartsWith(slug), ct);
+        if (count > 0) slug = $"{slug}-{count + 1}";
+
+        var envClass = Enum.TryParse<EnvelopeClass>(request.Class, true, out var parsedClass) ? parsedClass : EnvelopeClass.Spend;
+        var env = new Envelope
+        {
+            OwnerId = owner.Id,
+            Name = name,
+            Slug = slug,
+            Class = envClass,
+            Purpose = request.Purpose?.Trim() ?? $"{name} spending envelope.",
+            UseRule = request.UseRule?.Trim() ?? "Fund according to plan.",
+            IsEssential = request.IsEssential
+        };
+
+        db.Envelopes.Add(env);
+
+        var cat = new Category
+        {
+            OwnerId = owner.Id,
+            Name = name,
+            Slug = slug,
+            EnvelopeId = env.Id
+        };
+        db.Categories.Add(cat);
+
+        if (request.PlannedAmount.HasValue && request.PlannedAmount.Value > 0)
+        {
+            var plan = await db.AllocationPlans.Include(p => p.Lines).FirstOrDefaultAsync(p => p.OwnerId == owner.Id && p.IsActive, ct);
+            if (plan != null)
+            {
+                var minor = Money.FromMajor(request.PlannedAmount.Value, owner.BaseCurrency).MinorUnits;
+                plan.Lines.Add(new AllocationLine
+                {
+                    AllocationPlanId = plan.Id,
+                    EnvelopeId = env.Id,
+                    Name = name,
+                    Kind = AllocationKind.Fixed,
+                    AmountMinor = minor,
+                    SortOrder = plan.Lines.Count + 1,
+                    Rule = $"Allocated to {name}."
+                });
+            }
+        }
+
+        await db.SaveChangesAsync(ct);
+        await AuditAsync(owner.Id, "create-envelope", "Envelope", env.Id, $"Created envelope {env.Name}.", ct);
+        return new EnvelopeDto(env.Id, env.Slug, env.Name, env.Class.ToString(), env.Purpose, env.UseRule);
+    }
+
+    public async Task<EnvelopeDto> UpdateEnvelopeAsync(Guid id, UpdateEnvelopeRequest request, CancellationToken ct)
+    {
+        var owner = await RequireOwner(ct);
+        var env = await db.Envelopes.FirstOrDefaultAsync(e => e.Id == id && e.OwnerId == owner.Id, ct)
+            ?? throw new DomainException("Envelope not found.");
+
+        if (!string.IsNullOrWhiteSpace(request.Name))
+        {
+            env.Name = request.Name.Trim();
+        }
+        if (Enum.TryParse<EnvelopeClass>(request.Class, true, out var parsedClass))
+        {
+            env.Class = parsedClass;
+        }
+        if (request.Purpose is not null) env.Purpose = request.Purpose.Trim();
+        if (request.UseRule is not null) env.UseRule = request.UseRule.Trim();
+        env.IsEssential = request.IsEssential;
+        env.IsActive = request.IsActive;
+
+        await db.SaveChangesAsync(ct);
+        await AuditAsync(owner.Id, "update-envelope", "Envelope", env.Id, $"Updated envelope {env.Name}.", ct);
+        return new EnvelopeDto(env.Id, env.Slug, env.Name, env.Class.ToString(), env.Purpose, env.UseRule);
+    }
+
+    public async Task DeleteEnvelopeAsync(Guid id, CancellationToken ct)
+    {
+        var owner = await RequireOwner(ct);
+        var env = await db.Envelopes.FirstOrDefaultAsync(e => e.Id == id && e.OwnerId == owner.Id, ct)
+            ?? throw new DomainException("Envelope not found.");
+
+        var hasTxs = await db.Transactions.AnyAsync(t => t.EnvelopeId == id && !t.IsVoided, ct);
+        if (hasTxs)
+        {
+            env.IsActive = false;
+        }
+        else
+        {
+            var planLines = await db.AllocationLines.Where(l => l.EnvelopeId == id).ToListAsync(ct);
+            db.AllocationLines.RemoveRange(planLines);
+            var cats = await db.Categories.Where(c => c.EnvelopeId == id).ToListAsync(ct);
+            foreach (var c in cats) c.EnvelopeId = null;
+            db.Envelopes.Remove(env);
+        }
+
+        await db.SaveChangesAsync(ct);
+        await AuditAsync(owner.Id, "delete-envelope", "Envelope", id, $"Deleted/archived envelope {env.Name}.", ct);
+    }
+
+    public async Task ResetWorkspaceAsync(CancellationToken ct)
+    {
+        var owner = await RequireOwner(ct);
+        await PlanSeeder.ClearOwnerPlanAsync(db, owner, ct);
+        owner.Archetype = null;
+        owner.OnboardingCompleted = false;
+        await db.SaveChangesAsync(ct);
+        await AuditAsync(owner.Id, "reset-workspace", "Owner", owner.Id, "Cleared workspace and reset onboarding status.", ct);
     }
 
     public async Task<IReadOnlyList<AllocationLineDto>> AllocationPlanAsync(string source, CancellationToken ct)
@@ -2154,8 +2410,8 @@ public sealed class FinanceOsService(
                 break;
             case "business":
                 var biz = await BusinessAsync(ct);
-                summary = biz.Net.Formatted;
-                lines = biz.Lines.Select(l => new ExplainLineDto(l.Category, l.Amount, null)).ToList();
+                summary = biz?.Net.Formatted ?? "No business registered";
+                lines = biz?.Lines.Select(l => new ExplainLineDto(l.Category, l.Amount, null)).ToList() ?? [];
                 break;
             case "reconciliation":
                 var recLines = new List<ExplainLineDto>();
@@ -2403,9 +2659,12 @@ public sealed class FinanceOsService(
             if (b.Slug != "matchpredictor")
             {
                 var bDto = await BusinessBySlugAsync(b.Slug, ct);
-                facts.Add(Fact($"{b.Name} revenue", bDto.Revenue));
-                facts.Add(Fact($"{b.Name} expenses", bDto.Expenses));
-                facts.Add(Fact($"{b.Name} net", bDto.Net));
+                if (bDto != null)
+                {
+                    facts.Add(Fact($"{b.Name} revenue", bDto.Revenue));
+                    facts.Add(Fact($"{b.Name} expenses", bDto.Expenses));
+                    facts.Add(Fact($"{b.Name} net", bDto.Net));
+                }
             }
         }
 

@@ -75,6 +75,7 @@ export type Dashboard = {
   };
   actionRequired: string[];
   unknowns: { text: string; href: string }[];
+  hasLegacyDemoData?: boolean;
 };
 
 export type Explain = { metric: string; sentence: string; formula: string; lines: { label: string; amount: Money; note?: string | null }[]; result: Money };

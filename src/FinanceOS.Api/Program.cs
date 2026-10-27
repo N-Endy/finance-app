@@ -126,7 +126,6 @@ using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<FinanceDbContext>();
     await DatabaseMigrator.EnsureSchemaUpToDateAsync(db);
-    await PlanSeeder.EnsureLatestSnapshotAsync(db);
 }
 
 app.MapOpenApi();

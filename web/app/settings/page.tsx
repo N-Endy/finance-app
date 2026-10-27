@@ -9,7 +9,7 @@ import type { Settings, AuthStatus } from "@/lib/types";
 export default function SettingsPage() {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [user, setUser] = useState<AuthStatus | null>(null);
-  const [allowance, setAllowance] = useState("70000");
+  const [allowance, setAllowance] = useState("");
   const [confirmClear, setConfirmClear] = useState(false);
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
   const [deleteConfirmText, setDeleteConfirmText] = useState("");
@@ -22,7 +22,7 @@ export default function SettingsPage() {
   useEffect(() => {
     void api.settings().then((row) => {
       setSettings(row);
-      setAllowance(String(row.opayAllowance.major ?? 70000));
+      setAllowance(row.opayAllowance.major != null ? String(row.opayAllowance.major) : "");
     }).catch((err) => setError(failMessage(err)));
 
     void api.me().then((me) => {
@@ -64,7 +64,7 @@ export default function SettingsPage() {
   return (
     <Shell>
       <h1>Settings</h1>
-      <p className="lede">Account session, OPay allowance, data export, and database lifecycle management.</p>
+      <p className="lede">Account session, discretionary spending limits, data export, and database lifecycle management.</p>
       {message && <p className="sentence">{message}</p>}
       {error && <p className="error">{error}</p>}
 
@@ -105,6 +105,34 @@ export default function SettingsPage() {
           <p className="lede">Watch {settings.watchPercent}% · warning {settings.warningPercent}% · over {settings.overBudgetPercent}% · Business reinvest/personal split {settings.businessReinvestPercent}/{settings.businessPersonalPercent}%</p>
         </Card>
       )}
+
+      <Card title="Workspace Structure & Clean Start">
+        <p className="sentence">
+          Want to start over with fresh accounts, a new base currency, or a different budgeting framework?
+        </p>
+        <p className="lede">
+          This clears all existing bank accounts, envelopes, and transactions, and opens the 3-step setup wizard so you can reconfigure your workspace cleanly. Your login credentials remain active.
+        </p>
+        <div style={{ marginTop: 12 }}>
+          <button
+            type="button"
+            className="btn ghost"
+            style={{ color: "#facc15", borderColor: "rgba(250, 204, 21, 0.4)" }}
+            onClick={async () => {
+              if (confirm("Are you sure you want to reset your workspace? All existing accounts and envelopes will be cleared so you can configure fresh accounts.")) {
+                try {
+                  await api.resetWorkspace();
+                  window.location.href = "/onboarding";
+                } catch (err) {
+                  setError(failMessage(err));
+                }
+              }
+            }}
+          >
+            Reset Workspace & Re-Run Setup
+          </button>
+        </div>
+      </Card>
 
       <Card title="Export & Data Portability">
         <p className="sentence">Download your complete financial records in multiple formats for your own records or portability.</p>

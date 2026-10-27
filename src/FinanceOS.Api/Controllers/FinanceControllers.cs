@@ -81,6 +81,21 @@ public sealed class FinanceController(FinanceOsService finance) : ControllerBase
     [HttpGet("accounts")]
     public Task<IReadOnlyList<AccountDto>> Accounts(CancellationToken ct) => finance.AccountsAsync(ct);
 
+    [HttpPost("accounts")]
+    public Task<AccountDto> CreateAccount([FromBody] CreateAccountRequest request, CancellationToken ct) =>
+        finance.CreateAccountAsync(request, ct);
+
+    [HttpPut("accounts/{id:guid}")]
+    public Task<AccountDto> UpdateAccount(Guid id, [FromBody] UpdateAccountRequest request, CancellationToken ct) =>
+        finance.UpdateAccountAsync(id, request, ct);
+
+    [HttpDelete("accounts/{id:guid}")]
+    public async Task<IActionResult> DeleteAccount(Guid id, CancellationToken ct)
+    {
+        await finance.DeleteAccountByIdAsync(id, ct);
+        return Ok();
+    }
+
     [HttpGet("accounts/{id:guid}/reconciliation")]
     public Task<ReconciliationResult> Reconciliation(Guid id, CancellationToken ct) => finance.AccountReconciliationAsync(id, ct);
 
@@ -100,6 +115,21 @@ public sealed class FinanceController(FinanceOsService finance) : ControllerBase
 
     [HttpGet("envelopes")]
     public Task<IReadOnlyList<EnvelopeDto>> Envelopes(CancellationToken ct) => finance.EnvelopesAsync(ct);
+
+    [HttpPost("envelopes")]
+    public Task<EnvelopeDto> CreateEnvelope([FromBody] CreateEnvelopeRequest request, CancellationToken ct) =>
+        finance.CreateEnvelopeAsync(request, ct);
+
+    [HttpPut("envelopes/{id:guid}")]
+    public Task<EnvelopeDto> UpdateEnvelope(Guid id, [FromBody] UpdateEnvelopeRequest request, CancellationToken ct) =>
+        finance.UpdateEnvelopeAsync(id, request, ct);
+
+    [HttpDelete("envelopes/{id:guid}")]
+    public async Task<IActionResult> DeleteEnvelope(Guid id, CancellationToken ct)
+    {
+        await finance.DeleteEnvelopeAsync(id, ct);
+        return Ok();
+    }
 
     [HttpGet("transactions")]
     public Task<IReadOnlyList<TransactionDto>> Transactions(
@@ -458,6 +488,13 @@ public sealed class FinanceController(FinanceOsService finance) : ControllerBase
         await finance.DeleteTenantAccountAsync(ct);
         await HttpContext.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
         return Ok();
+    }
+
+    [HttpPost("data/reset-workspace")]
+    public async Task<IActionResult> ResetWorkspace(CancellationToken ct)
+    {
+        await finance.ResetWorkspaceAsync(ct);
+        return Ok(new { ok = true, message = "Workspace reset to fresh onboarding state." });
     }
 
     [HttpDelete("data")]

@@ -332,23 +332,27 @@ export default function TransactionsPage() {
     if (!parseResult || selectedDraftIndices.size === 0) return;
 
     const selectedItems = parseResult.items.filter((item) => selectedDraftIndices.has(item.tempIndex));
-    const txPayloads = selectedItems.map((item) => ({
-      date: item.date,
-      type: item.type,
-      accountId: item.accountId || selectedAccountId || accounts[0]?.id,
-      counterpartyAccountId: item.counterpartyAccountId,
-      amount: item.amount,
-      fee: 0,
-      currency: item.currency || "NGN",
-      categoryId: item.categoryId,
-      envelopeId: null,
-      description: item.description,
-      notes: item.rawNarration !== item.description ? item.rawNarration : null,
-      source: "statement_import",
-      tags: item.isTransfer ? "transfer,statement" : "statement",
-      isBusiness: false,
-      isRecurring: false
-    }));
+    const txPayloads = selectedItems.map((item) => {
+      const matchedAcc = accounts.find((a) => a.id === (item.accountId || selectedAccountId));
+      const fallbackCurrency = matchedAcc?.latestBalance?.currencyCode || accounts[0]?.latestBalance?.currencyCode || "USD";
+      return {
+        date: item.date,
+        type: item.type,
+        accountId: item.accountId || selectedAccountId || accounts[0]?.id,
+        counterpartyAccountId: item.counterpartyAccountId,
+        amount: item.amount,
+        fee: 0,
+        currency: item.currency || fallbackCurrency,
+        categoryId: item.categoryId,
+        envelopeId: null,
+        description: item.description,
+        notes: item.rawNarration !== item.description ? item.rawNarration : null,
+        source: "statement_import",
+        tags: item.isTransfer ? "transfer,statement" : "statement",
+        isBusiness: false,
+        isRecurring: false
+      };
+    });
 
     setError(null);
     setMessage(null);
@@ -369,7 +373,7 @@ export default function TransactionsPage() {
   return (
     <Shell>
       <h1>Where did my money go?</h1>
-      <p className="lede">Record transactions, import bank statements (Stanbic, OPay, Kuda, Access), and inspect ledger facts.</p>
+      <p className="lede">Record transactions, import bank statements from any institution, and inspect ledger facts.</p>
 
       <OfflineIndicator />
 
@@ -388,7 +392,7 @@ export default function TransactionsPage() {
           className={`btn ${activeTab === "statement" ? "" : "ghost"}`}
           onClick={() => setActiveTab("statement")}
         >
-          Nigerian Bank Statement Ingestion
+          Statement Ingestion
         </button>
       </div>
 
@@ -460,9 +464,9 @@ export default function TransactionsPage() {
       )}
 
       {activeTab === "statement" && (
-        <Card title="Nigerian bank statement parser">
+        <Card title="Universal bank & statement parser">
           <p className="sentence">
-            Auto-detects exports from <strong>Stanbic IBTC, OPay, Kuda Bank, and Access Bank</strong>. Inter-account transfers are detected automatically and never counted as expenses.
+            Universal statement ingestion. Upload or paste statement exports from any financial institution, global bank, digital wallet, or standard CSV format (Date, Description, Amount, Debit/Credit). Transfers between your accounts are automatically detected and prevented from double-counting.
           </p>
 
           <form className="stack" onSubmit={handleParseStatement} style={{ marginTop: 12 }}>
@@ -472,12 +476,14 @@ export default function TransactionsPage() {
                   Bank Format
                 </label>
                 <select value={bankFormat} onChange={(e) => setBankFormat(e.target.value)}>
-                  <option value="auto">Auto-detect format</option>
+                  <option value="auto">Auto-detect format (Universal)</option>
+                  <option value="generic">Universal Bank CSV (Date, Narration, Amount / Debit & Credit)</option>
+                  <option value="chase">Chase / Bank of America / Wells Fargo</option>
+                  <option value="revolut">Revolut / Monzo / Wise</option>
                   <option value="stanbic">Stanbic IBTC Bank</option>
                   <option value="opay">OPay Wallet / Bank</option>
                   <option value="kuda">Kuda Microfinance Bank</option>
                   <option value="access">Access Bank</option>
-                  <option value="generic">Generic CSV export</option>
                 </select>
               </div>
 
@@ -507,7 +513,7 @@ export default function TransactionsPage() {
                 rows={5}
                 value={statementText}
                 onChange={(e) => setStatementText(e.target.value)}
-                placeholder="Paste CSV rows from Stanbic, OPay, Kuda, or Access Bank..."
+                placeholder="Paste CSV rows (e.g. Date, Description, Amount, or exports from your bank or fintech)..."
               />
             </div>
 
