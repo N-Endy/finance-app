@@ -1050,31 +1050,97 @@ public sealed class FinanceOsService(
             var current = await GoalCurrentAsync(owner, goal, ct);
             var remaining = current.Minor is null ? (long?)null : goal.TargetMinor - current.Minor.Value;
             var sentence = goal.IsAspiration
-                ? "₦500m+ is an aspiration."
+                ? $"{Money.FromMajor(goal.TargetMinor / 100m, goal.Currency)} is an aspiration."
                 : current.Minor is null
                     ? $"Current progress is UNKNOWN. {current.Needed}"
                     : remaining <= 0
                         ? $"{goal.Name} has reached its recorded target on confirmed or last-known figures as labelled."
-                        : $"You're {Money.FromMajor((remaining ?? 0) / 100m, Currency.Ngn)} away from the {goal.Name} target.";
+                        : $"You're {Money.FromMajor((remaining ?? 0) / 100m, goal.Currency)} away from the {goal.Name} target.";
             var math = SinkingFundMath.RequiredMonthly(goal.TargetMinor, current.Minor, goal.Deadline, MoneyMapping.Today(), goal.MonthlyContributionMinor);
             list.Add(new GoalDto(goal.Id, goal.Slug, goal.Name, goal.Kind.ToString(),
                 MoneyDto.Of(goal.TargetMinor, goal.Currency, Provenance.Plan),
                 current, sentence, MoneyDto.Of(goal.MonthlyContributionMinor, goal.Currency, Provenance.Plan),
                 goal.Deadline,
                 math.RequiredMonthlyMinor is null ? null : MoneyDto.Of(math.RequiredMonthlyMinor.Value, goal.Currency, Provenance.Plan),
-                math.ProjectedCompletion, goal.IsAspiration));
+                math.ProjectedCompletion, goal.IsAspiration, goal.FundingAccountId));
         }
 
         return list;
     }
 
-    public async Task UpdateGoalAsync(Guid id, decimal target, decimal monthly, CancellationToken ct)
+    public async Task<GoalDto> CreateGoalAsync(CreateGoalRequest request, CancellationToken ct)
     {
         var owner = await RequireOwner(ct);
-        var goal = await db.Goals.SingleAsync(g => g.Id == id && g.OwnerId == owner.Id, ct);
-        goal.TargetMinor = Money.NgnFromMajor(target).MinorUnits;
-        goal.MonthlyContributionMinor = Money.NgnFromMajor(monthly).MinorUnits;
+        if (string.IsNullOrWhiteSpace(request.Name))
+        {
+            throw new DomainException("Goal name cannot be empty.");
+        }
+
+        var slug = Slugify(request.Name);
+        var kind = Enum.TryParse<GoalKind>(request.Kind, true, out var parsedKind) ? parsedKind : GoalKind.SinkingFund;
+        var targetMinor = Money.FromMajor(request.Target, owner.BaseCurrency).MinorUnits;
+        var monthlyMinor = Money.FromMajor(request.Monthly, owner.BaseCurrency).MinorUnits;
+
+        var goal = new Goal
+        {
+            OwnerId = owner.Id,
+            Slug = slug,
+            Name = request.Name.Trim(),
+            Kind = kind,
+            TargetMinor = targetMinor,
+            MonthlyContributionMinor = monthlyMinor,
+            Currency = owner.BaseCurrency,
+            Deadline = request.Deadline,
+            FundingAccountId = request.FundingAccountId,
+            IsAspiration = request.IsAspiration,
+            IsActive = true
+        };
+
+        db.Goals.Add(goal);
         await db.SaveChangesAsync(ct);
+        await AuditAsync(owner.Id, "create-goal", "Goal", goal.Id, $"Created goal {goal.Name}.", ct);
+
+        var current = await GoalCurrentAsync(owner, goal, ct);
+        return new GoalDto(goal.Id, goal.Slug, goal.Name, goal.Kind.ToString(),
+            MoneyDto.Of(goal.TargetMinor, goal.Currency, Provenance.Plan),
+            current,
+            $"Target is {Money.FromMajor(request.Target, goal.Currency)}.",
+            MoneyDto.Of(goal.MonthlyContributionMinor, goal.Currency, Provenance.Plan),
+            goal.Deadline,
+            null,
+            null,
+            goal.IsAspiration,
+            goal.FundingAccountId);
+    }
+
+    public async Task UpdateGoalAsync(Guid id, UpdateGoalRequest request, CancellationToken ct)
+    {
+        var owner = await RequireOwner(ct);
+        var goal = await db.Goals.SingleOrDefaultAsync(g => g.Id == id && g.OwnerId == owner.Id, ct)
+            ?? throw new DomainException("Goal not found.");
+
+        if (!string.IsNullOrWhiteSpace(request.Name)) goal.Name = request.Name.Trim();
+        if (request.Kind is not null && Enum.TryParse<GoalKind>(request.Kind, true, out var parsedKind)) goal.Kind = parsedKind;
+        if (request.Target.HasValue) goal.TargetMinor = Money.FromMajor(request.Target.Value, owner.BaseCurrency).MinorUnits;
+        if (request.Monthly.HasValue) goal.MonthlyContributionMinor = Money.FromMajor(request.Monthly.Value, owner.BaseCurrency).MinorUnits;
+        if (request.Deadline.HasValue) goal.Deadline = request.Deadline.Value;
+        if (request.FundingAccountId.HasValue) goal.FundingAccountId = request.FundingAccountId.Value;
+        if (request.IsAspiration.HasValue) goal.IsAspiration = request.IsAspiration.Value;
+        if (request.IsActive.HasValue) goal.IsActive = request.IsActive.Value;
+
+        await db.SaveChangesAsync(ct);
+        await AuditAsync(owner.Id, "update-goal", "Goal", goal.Id, $"Updated goal {goal.Name}.", ct);
+    }
+
+    public async Task DeleteGoalAsync(Guid id, CancellationToken ct)
+    {
+        var owner = await RequireOwner(ct);
+        var goal = await db.Goals.SingleOrDefaultAsync(g => g.Id == id && g.OwnerId == owner.Id, ct)
+            ?? throw new DomainException("Goal not found.");
+
+        db.Goals.Remove(goal);
+        await db.SaveChangesAsync(ct);
+        await AuditAsync(owner.Id, "delete-goal", "Goal", id, $"Deleted goal {goal.Name}.", ct);
     }
 
     public async Task ConvertHousingToNextRentAsync(CancellationToken ct)

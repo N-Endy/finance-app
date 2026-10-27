@@ -186,11 +186,25 @@ public sealed class FinanceController(FinanceOsService finance) : ControllerBase
     [HttpGet("goals")]
     public Task<IReadOnlyList<GoalDto>> Goals(CancellationToken ct) => finance.GoalsAsync(ct);
 
-    [HttpPut("goals/{id:guid}")]
-    public async Task<IActionResult> UpdateGoal(Guid id, [FromBody] GoalWriteRequest request, CancellationToken ct)
+    [HttpPost("goals")]
+    public async Task<ActionResult<GoalDto>> CreateGoal([FromBody] CreateGoalRequest request, CancellationToken ct)
     {
-        await finance.UpdateGoalAsync(id, request.Target, request.Monthly, ct);
+        var result = await finance.CreateGoalAsync(request, ct);
+        return Ok(result);
+    }
+
+    [HttpPut("goals/{id:guid}")]
+    public async Task<IActionResult> UpdateGoal(Guid id, [FromBody] UpdateGoalRequest request, CancellationToken ct)
+    {
+        await finance.UpdateGoalAsync(id, request, ct);
         return Ok();
+    }
+
+    [HttpDelete("goals/{id:guid}")]
+    public async Task<IActionResult> DeleteGoal(Guid id, CancellationToken ct)
+    {
+        await finance.DeleteGoalAsync(id, ct);
+        return NoContent();
     }
 
     [HttpPost("goals/housing/convert-to-next-rent")]

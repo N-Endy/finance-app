@@ -360,9 +360,30 @@ public sealed record ExplainDto(
 public sealed record ExplainLineDto(string Label, MoneyDto Amount, string? Note);
 
 public sealed record EnvelopeDto(Guid Id, string Slug, string Name, string Class, string Purpose, string UseRule);
+
+public sealed record CreateGoalRequest(
+    string Name,
+    string? Kind = null,
+    decimal Target = 0,
+    decimal Monthly = 0,
+    DateOnly? Deadline = null,
+    Guid? FundingAccountId = null,
+    bool IsAspiration = false);
+
+public sealed record UpdateGoalRequest(
+    string? Name = null,
+    string? Kind = null,
+    decimal? Target = null,
+    decimal? Monthly = null,
+    DateOnly? Deadline = null,
+    Guid? FundingAccountId = null,
+    bool? IsAspiration = null,
+    bool? IsActive = null);
+
 public sealed record GoalDto(
     Guid Id, string Slug, string Name, string Kind, MoneyDto Target, MoneyDto Current, string ProgressSentence,
-    MoneyDto Monthly, DateOnly? Deadline, MoneyDto? RequiredMonthly, DateOnly? ProjectedCompletion, bool IsAspiration);
+    MoneyDto Monthly, DateOnly? Deadline, MoneyDto? RequiredMonthly, DateOnly? ProjectedCompletion, bool IsAspiration,
+    Guid? FundingAccountId = null);
 
 public sealed record HoldingDto(
     Guid Id,
